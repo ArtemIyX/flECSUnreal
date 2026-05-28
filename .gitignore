@@ -1,0 +1,88 @@
+# =========================
+# Unreal Engine 5
+# =========================
+
+# Build / Intermediate
+Binaries/
+Build/
+DerivedDataCache/
+Intermediate/
+Saved/
+
+# Generated project files
+*.VC.db
+*.VC.opendb
+*.opensdf
+*.sdf
+*.sln
+*.suo
+*.xcodeproj
+*.xcworkspace
+
+# UE specific
+.vscode/
+.vs/
+
+# Ignore auto-generated config backups
+Saved/Config/WindowsEditor/
+
+# =========================
+# Visual Studio
+# =========================
+
+.vs/
+*.user
+*.userosscache
+*.suo
+*.cache
+*.pdb
+*.obj
+*.ipch
+*.aps
+*.ncb
+*.opendb
+*.tlog
+*.lastbuildstate
+
+# Build results
+Debug/
+DebugGame/
+Development/
+Shipping/
+Test/
+
+# =========================
+# Rider / JetBrains (.idea)
+# =========================
+
+.idea/
+*.sln.iml
+*.DotSettings.user
+*.DotSettings
+
+# Rider caches
+.idea/.idea.*
+.idea/**/workspace.xml
+.idea/**/tasks.xml
+.idea/**/usage.statistics.xml
+.idea/**/dictionaries
+.idea/**/shelf
+
+# =========================
+# OS / General junk
+# =========================
+
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Logs
+*.log
+
+# Temp
+*.tmp
+*.temp
+*.bak
+*.swp
+
