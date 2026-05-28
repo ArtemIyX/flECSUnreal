@@ -1,6 +1,7 @@
 ﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "FLECS.h"
+#include "FLECS/Public/FLECS.h"
 
 #define LOCTEXT_NAMESPACE "FFLECSModule"
 
