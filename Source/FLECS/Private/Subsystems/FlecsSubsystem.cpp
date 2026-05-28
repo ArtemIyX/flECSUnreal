@@ -1,13 +1,10 @@
 #include "Subsystems/FlecsSubsystem.h"
 
-UFlecsSubsystem::UFlecsSubsystem()
-{
-	
-}
-UFlecsSubsystem::~UFlecsSubsystem()
-{
-	
-}
+#include "Settings/FlecsDeveloperSettings.h"
+#include "Engine/Level.h"
+
+UFlecsSubsystem::UFlecsSubsystem() = default;
+UFlecsSubsystem::~UFlecsSubsystem() = default;
 
 void UFlecsSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
@@ -15,23 +12,32 @@ void UFlecsSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 
 	EcsWorld = MakeUnique<flecs::world>();
 
-	TickHandle = FTSTicker::GetCoreTicker().AddTicker(
-		FTickerDelegate::CreateUObject(this, &UFlecsSubsystem::Tick));
+	TickFunction.Owner = this;
+	TickFunction.bCanEverTick = true;
+	TickFunction.bStartWithTickEnabled = true;
+	TickFunction.TickGroup = ResolveTickGroup();
+
+	if (UWorld* World = GetWorld())
+	{
+		if (World->PersistentLevel)
+		{
+			TickFunction.RegisterTickFunction(World->PersistentLevel);
+		}
+	}
 }
 
 void UFlecsSubsystem::Deinitialize()
 {
-	if (TickHandle.IsValid())
+	if (TickFunction.IsTickFunctionRegistered())
 	{
-		FTSTicker::GetCoreTicker().RemoveTicker(TickHandle);
-		TickHandle.Reset();
+		TickFunction.UnRegisterTickFunction();
 	}
 
-	for (TPair<FName, flecs::entity>& pair : RuntimeSystems)
+	for (TPair<FName, flecs::entity>& Pair : RuntimeSystems)
 	{
-		if (pair.Value.is_valid())
+		if (Pair.Value.is_valid())
 		{
-			pair.Value.destruct();
+			Pair.Value.destruct();
 		}
 	}
 	RuntimeSystems.Empty();
@@ -39,6 +45,11 @@ void UFlecsSubsystem::Deinitialize()
 	EcsWorld.Reset();
 
 	Super::Deinitialize();
+}
+
+bool UFlecsSubsystem::DoesSupportWorldType(const EWorldType::Type WorldType) const
+{
+	return WorldType == EWorldType::Game || WorldType == EWorldType::PIE || WorldType == EWorldType::GameRPC;
 }
 
 flecs::world* UFlecsSubsystem::GetEcsWorld()
@@ -53,15 +64,15 @@ const flecs::world* UFlecsSubsystem::GetEcsWorld() const
 
 bool UFlecsSubsystem::UnregisterSystem(FName SystemName)
 {
-	flecs::entity* foundSystem = RuntimeSystems.Find(SystemName);
-	if (!foundSystem)
+	flecs::entity* FoundSystem = RuntimeSystems.Find(SystemName);
+	if (!FoundSystem)
 	{
 		return false;
 	}
 
-	if (foundSystem->is_valid())
+	if (FoundSystem->is_valid())
 	{
-		foundSystem->destruct();
+		FoundSystem->destruct();
 	}
 
 	RuntimeSystems.Remove(SystemName);
@@ -75,32 +86,60 @@ bool UFlecsSubsystem::UnregisterSystem(flecs::entity SystemEntity)
 		return false;
 	}
 
-	FName foundName = NAME_None;
+	FName FoundName = NAME_None;
 	for (const TPair<FName, flecs::entity>& Pair : RuntimeSystems)
 	{
 		if (Pair.Value == SystemEntity)
 		{
-			foundName = Pair.Key;
+			FoundName = Pair.Key;
 			break;
 		}
 	}
 
 	SystemEntity.destruct();
 
-	if (foundName != NAME_None)
+	if (FoundName != NAME_None)
 	{
-		RuntimeSystems.Remove(foundName);
+		RuntimeSystems.Remove(FoundName);
 	}
 
 	return true;
 }
 
-bool UFlecsSubsystem::Tick(float DeltaTime)
+void UFlecsSubsystem::Tick(float DeltaTime)
 {
 	if (EcsWorld.IsValid())
 	{
 		EcsWorld->progress(static_cast<ecs_ftime_t>(DeltaTime));
 	}
+}
 
-	return true;
+ETickingGroup UFlecsSubsystem::ResolveTickGroup() const
+{
+	const UFlecsDeveloperSettings* settings = GetDefault<UFlecsDeveloperSettings>();
+	switch (settings->TickPhase)
+	{
+	case EFlecsTickPhase::PrePhysics:
+		return TG_PrePhysics;
+	case EFlecsTickPhase::DuringPhysics:
+		return TG_DuringPhysics;
+	case EFlecsTickPhase::PostUpdateWork:
+		return TG_PostUpdateWork;
+	case EFlecsTickPhase::PostPhysics:
+	default:
+		return TG_PostPhysics;
+	}
+}
+
+void UFlecsSubsystem::FFlecsTickFunction::ExecuteTick(float DeltaTime, ELevelTick TickType, ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
+{
+	if (Owner)
+	{
+		Owner->Tick(DeltaTime);
+	}
+}
+
+FString UFlecsSubsystem::FFlecsTickFunction::DiagnosticMessage()
+{
+	return TEXT("UFlecsSubsystem::FFlecsTickFunction");
 }
