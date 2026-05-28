@@ -1,0 +1,23 @@
+﻿{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0",
+	"FriendlyName": "FLECS",
+	"Description": "ECS framework (Pure C++)",
+	"Category": "Other",
+	"CreatedBy": "Wellsaik",
+	"CreatedByURL": "Wellsaik",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"CanContainContent": true,
+	"IsBetaVersion": false,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "FLECS",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		}
+	]
+}
