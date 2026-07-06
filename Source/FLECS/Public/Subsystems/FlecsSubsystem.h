@@ -7,8 +7,13 @@
 #include "Subsystems/WorldSubsystem.h"
 #include "Misc/Build.h"
 
+#pragma push_macro("FLECS_API")
+#undef FLECS_API
+
 PRAGMA_DISABLE_UNREACHABLE_CODE_WARNINGS
 #include "flecs.h"
+
+#pragma pop_macro("FLECS_API")
 
 #include "FlecsSubsystem.generated.h"
 
@@ -25,16 +30,13 @@ class FLECS_API UFlecsSubsystem : public UWorldSubsystem
 	GENERATED_BODY()
 
 public:
-	/** @brief Construct the Flecs world subsystem. */
 	UFlecsSubsystem();
-	/** @brief Destroy the subsystem and release world-owned resources. */
-	virtual ~UFlecsSubsystem() override;
-
 
 public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
 	virtual bool DoesSupportWorldType(const EWorldType::Type WorldType) const override;
+	
 
 public:
 	/** @brief Get mutable access to the owned Flecs world. */
