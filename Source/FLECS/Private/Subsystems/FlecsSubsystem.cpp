@@ -3,8 +3,11 @@
 #include "Settings/FlecsDeveloperSettings.h"
 #include "Engine/Level.h"
 
-UFlecsSubsystem::UFlecsSubsystem() = default;
-UFlecsSubsystem::~UFlecsSubsystem() = default;
+
+UFlecsSubsystem::UFlecsSubsystem()
+{
+	EcsWorld.Reset();
+}
 
 void UFlecsSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
