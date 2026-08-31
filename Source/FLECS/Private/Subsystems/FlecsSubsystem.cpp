@@ -2,29 +2,44 @@
 
 #include "Settings/FlecsDeveloperSettings.h"
 #include "Engine/Level.h"
+#include "Engine/GameInstance.h"
 
-
-UFlecsSubsystem::UFlecsSubsystem()
-{
-	EcsWorld.Reset();
-}
+UFlecsSubsystem::UFlecsSubsystem() = default;
 
 void UFlecsSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
+	CachedOwnerSubsystem.Reset();
+	UFlecsGameInstanceSubsystem* ownerSubsystem = nullptr;
+	if (UWorld* world = GetWorld())
+	{
+		if (UGameInstance* gameInstance = world->GetGameInstance())
+		{
+			CachedOwnerSubsystem = gameInstance->GetSubsystem<UFlecsGameInstanceSubsystem>();
+			ownerSubsystem = CachedOwnerSubsystem.Get();
+		}
+	}
 
-	EcsWorld = MakeUnique<flecs::world>();
+	if (!ownerSubsystem)
+	{
+		return;
+	}
 
 	TickFunction.Owner = this;
 	TickFunction.bCanEverTick = true;
 	TickFunction.bStartWithTickEnabled = true;
 	TickFunction.TickGroup = ResolveTickGroup();
 
-	if (UWorld* World = GetWorld())
+	if (UWorld* world = GetWorld())
 	{
-		if (World->PersistentLevel)
+		if (!ownerSubsystem->AttachWorld(*world))
 		{
-			TickFunction.RegisterTickFunction(World->PersistentLevel);
+			return;
+		}
+
+		if (world->PersistentLevel)
+		{
+			TickFunction.RegisterTickFunction(world->PersistentLevel);
 		}
 	}
 }
@@ -36,16 +51,23 @@ void UFlecsSubsystem::Deinitialize()
 		TickFunction.UnRegisterTickFunction();
 	}
 
-	for (TPair<FName, flecs::entity>& Pair : RuntimeSystems)
+	for (TPair<FName, flecs::entity>& pair : RuntimeSystems)
 	{
-		if (Pair.Value.is_valid())
+		if (pair.Value.is_valid())
 		{
-			Pair.Value.destruct();
+			pair.Value.destruct();
 		}
 	}
 	RuntimeSystems.Empty();
 
-	EcsWorld.Reset();
+	if (UFlecsGameInstanceSubsystem* ownerSubsystem = GetOwnerSubsystem())
+	{
+		if (UWorld* world = GetWorld())
+		{
+			ownerSubsystem->DetachWorld(*world);
+		}
+	}
+	CachedOwnerSubsystem.Reset();
 
 	Super::Deinitialize();
 }
@@ -57,25 +79,43 @@ bool UFlecsSubsystem::DoesSupportWorldType(const EWorldType::Type WorldType) con
 
 flecs::world* UFlecsSubsystem::GetEcsWorld()
 {
-	return EcsWorld.Get();
+	if (UFlecsGameInstanceSubsystem* ownerSubsystem = GetOwnerSubsystem())
+	{
+		return ownerSubsystem->GetEcsWorld();
+	}
+	return nullptr;
 }
 
 const flecs::world* UFlecsSubsystem::GetEcsWorld() const
 {
-	return EcsWorld.Get();
+	if (const UFlecsGameInstanceSubsystem* ownerSubsystem = GetOwnerSubsystem())
+	{
+		return ownerSubsystem->GetEcsWorld();
+	}
+	return nullptr;
+}
+
+flecs::entity UFlecsSubsystem::CreatePersistentEntity(const char* InName)
+{
+	return GetOwnerSubsystem() ? GetOwnerSubsystem()->CreatePersistentEntity(InName) : flecs::entity();
+}
+
+flecs::entity UFlecsSubsystem::CreateWorldEntity(const char* InName)
+{
+	return GetOwnerSubsystem() ? GetOwnerSubsystem()->CreateWorldEntity(InName) : flecs::entity();
 }
 
 bool UFlecsSubsystem::UnregisterSystem(FName SystemName)
 {
-	flecs::entity* FoundSystem = RuntimeSystems.Find(SystemName);
-	if (!FoundSystem)
+	flecs::entity* foundSystem = RuntimeSystems.Find(SystemName);
+	if (!foundSystem)
 	{
 		return false;
 	}
 
-	if (FoundSystem->is_valid())
+	if (foundSystem->is_valid())
 	{
-		FoundSystem->destruct();
+		foundSystem->destruct();
 	}
 
 	RuntimeSystems.Remove(SystemName);
@@ -84,37 +124,61 @@ bool UFlecsSubsystem::UnregisterSystem(FName SystemName)
 
 bool UFlecsSubsystem::UnregisterSystem(flecs::entity SystemEntity)
 {
-	if (!SystemEntity.is_valid())
+	const flecs::world* ecsWorld = GetEcsWorld();
+	if (!ecsWorld || !SystemEntity.is_valid() || SystemEntity.world().c_ptr() != ecsWorld->c_ptr())
 	{
 		return false;
 	}
 
-	FName FoundName = NAME_None;
-	for (const TPair<FName, flecs::entity>& Pair : RuntimeSystems)
+	FName foundName = NAME_None;
+	for (const TPair<FName, flecs::entity>& pair : RuntimeSystems)
 	{
-		if (Pair.Value == SystemEntity)
+		if (pair.Value == SystemEntity)
 		{
-			FoundName = Pair.Key;
+			foundName = pair.Key;
 			break;
 		}
 	}
 
-	SystemEntity.destruct();
-
-	if (FoundName != NAME_None)
+	if (foundName != NAME_None)
 	{
-		RuntimeSystems.Remove(FoundName);
+		SystemEntity.destruct();
+		RuntimeSystems.Remove(foundName);
+		return true;
 	}
 
-	return true;
+	return false;
 }
 
 void UFlecsSubsystem::Tick(float DeltaTime)
 {
-	if (EcsWorld.IsValid())
+	if (UWorld* world = GetWorld())
 	{
-		EcsWorld->progress(static_cast<ecs_ftime_t>(DeltaTime));
+		if (UFlecsGameInstanceSubsystem* ownerSubsystem = GetOwnerSubsystem())
+		{
+			ownerSubsystem->ProgressFromWorld(*world, DeltaTime);
+		}
 	}
+}
+
+UFlecsGameInstanceSubsystem* UFlecsSubsystem::GetOwnerSubsystem() const
+{
+	if (UFlecsGameInstanceSubsystem* ownerSubsystem = CachedOwnerSubsystem.Get())
+	{
+		return ownerSubsystem;
+	}
+
+	UFlecsSubsystem* mutableThis = const_cast<UFlecsSubsystem*>(this);
+	if (UWorld* world = mutableThis->GetWorld())
+	{
+		if (UGameInstance* gameInstance = world->GetGameInstance())
+		{
+			mutableThis->CachedOwnerSubsystem = gameInstance->GetSubsystem<UFlecsGameInstanceSubsystem>();
+			return mutableThis->CachedOwnerSubsystem.Get();
+		}
+	}
+
+	return nullptr;
 }
 
 ETickingGroup UFlecsSubsystem::ResolveTickGroup() const

@@ -6,6 +6,7 @@
 #include "Tickable.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "Misc/Build.h"
+#include "Subsystems/FlecsGameInstanceSubsystem.h"
 
 #pragma push_macro("FLECS_API")
 #undef FLECS_API
@@ -20,9 +21,7 @@ PRAGMA_DISABLE_UNREACHABLE_CODE_WARNINGS
 /**
  * @brief World-scoped bridge between Unreal Engine and a Flecs world.
  *
- * The subsystem owns a persistent `flecs::world` for each supported gameplay
- * world and advances it once per Unreal tick group phase configured by plugin
- * settings.
+ * World-scoped bridge for the GameInstance-owned Flecs world.
  */
 UCLASS(Blueprintable, BlueprintType)
 class FLECS_API UFlecsSubsystem : public UWorldSubsystem
@@ -43,6 +42,8 @@ public:
 	flecs::world* GetEcsWorld();
 	/** @brief Get const access to the owned Flecs world. */
 	const flecs::world* GetEcsWorld() const;
+	flecs::entity CreatePersistentEntity(const char* InName = nullptr);
+	flecs::entity CreateWorldEntity(const char* InName = nullptr);
 
 	/**
 	 * @brief Unregister and destroy a runtime system by name.
@@ -78,21 +79,32 @@ public:
 	template <typename... Components, typename FuncType>
 	flecs::entity RegisterOnUpdateSystem(const FName SystemName, FuncType&& Func)
 	{
-		check(EcsWorld.IsValid());
-		check(!SystemName.IsNone());
+		UFlecsGameInstanceSubsystem* ownerSubsystem = GetOwnerSubsystem();
+		if (!ownerSubsystem || SystemName.IsNone())
+		{
+			return flecs::entity();
+		}
 
 		UnregisterSystem(SystemName);
 
-		FTCHARToUTF8 ConvertedName(*SystemName.ToString());
-		flecs::entity SystemEntity = EcsWorld->system<Components...>(ConvertedName.Get())
+		const FName scopedSystemName = ownerSubsystem->MakeWorldSystemName(SystemName);
+		FTCHARToUTF8 convertedName(*scopedSystemName.ToString());
+		flecs::world* ecsWorld = ownerSubsystem->GetEcsWorld();
+		if (!ecsWorld)
+		{
+			return flecs::entity();
+		}
+
+		flecs::entity systemEntity = ecsWorld->system<Components...>(convertedName.Get())
 			.kind(flecs::OnUpdate)
 			.each(Forward<FuncType>(Func));
 
-		RuntimeSystems.Add(SystemName, SystemEntity);
-		return SystemEntity;
+		RuntimeSystems.Add(SystemName, systemEntity);
+		return systemEntity;
 	}
 
 private:
+	UFlecsGameInstanceSubsystem* GetOwnerSubsystem() const;
 	/** @brief Resolve UE tick group from plugin developer settings. */
 	ETickingGroup ResolveTickGroup() const;
 
@@ -109,8 +121,9 @@ private:
 
 	/** UE tick function registration object for this subsystem. */
 	FFlecsTickFunction TickFunction;
-	/** Owned Flecs world instance for this UE world. */
-	TUniquePtr<flecs::world> EcsWorld;
+	/** Cached GameInstance-owned subsystem. */
+	UPROPERTY(Transient)
+	TWeakObjectPtr<UFlecsGameInstanceSubsystem> CachedOwnerSubsystem;
 	/** Runtime systems tracked by developer-provided names. */
 	TMap<FName, flecs::entity> RuntimeSystems;
 };
