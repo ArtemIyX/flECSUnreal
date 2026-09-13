@@ -33,7 +33,7 @@
 /* Flecs version macros */
 #define FLECS_VERSION_MAJOR 4  /**< Flecs major version. */
 #define FLECS_VERSION_MINOR 1  /**< Flecs minor version. */
-#define FLECS_VERSION_PATCH 5  /**< Flecs patch version. */
+#define FLECS_VERSION_PATCH 6  /**< Flecs patch version. */
 
 /** Flecs version. */
 #define FLECS_VERSION FLECS_VERSION_IMPL(\
@@ -111,6 +111,9 @@
 #ifdef FLECS_DEBUG
 #ifndef FLECS_DEBUG_INFO
 #define FLECS_DEBUG_INFO
+#endif
+#ifndef FLECS_EXCLUSIVE_ACCESS
+#define FLECS_EXCLUSIVE_ACCESS /* Enable exclusive access checks in debug mode */
 #endif
 #endif
 
@@ -222,6 +225,7 @@
 // #define FLECS_C           /**< C API convenience macros, always enabled. */
 #define FLECS_CPP            /**< C++ API. */
 #define FLECS_DOC            /**< Document entities and components. */
+// #define FLECS_EXCLUSIVE_ACCESS /**< Enable exclusive world access checks. */
 // #define FLECS_JOURNAL     /**< Journaling addon. */
 #define FLECS_JSON           /**< Parsing JSON to/from component values. */
 #define FLECS_HTTP           /**< Tiny HTTP server for connecting to remote UI. */
@@ -1174,6 +1178,7 @@ struct ecs_iter_t {
     const ecs_entity_t *entities; /**< Entity identifiers. */
     void **ptrs;                  /**< Component pointers. If not set or if it is NULL for a field, use it->trs. */
     const ecs_table_record_t **trs; /**< Info on where to find the field in the table. */
+    const int16_t *columns;
     const ecs_size_t *sizes;      /**< Component sizes. */
     ecs_table_t *table;           /**< Current table. */
     ecs_table_t *other_table;     /**< Previous or next table when adding or removing. */
@@ -1266,6 +1271,27 @@ struct ecs_iter_t {
  * \ingroup queries
  */
 #define EcsQueryDetectChanges         (1u << 8u)
+
+/** Enable ordering for query groups.
+ * When this flag is set, groups will be iterated in ascending order, with lower
+ * group ids first and higher group ids afterwards.
+ * 
+ * This flag is enabled automatically when a query contains cascade terms.
+ * 
+ * \ingroup queries
+ */
+#define EcsQueryGroupByOrdered        (1u << 9u)
+
+/** Enable descending ordering for query groups.
+ * When this flag is set in combination with EcsQueryGroupByOrdered, groups will 
+ * be iterated in descending order, with higher group ids first and lower group 
+ * ids afterwards.
+ * 
+ * This flag is enabled automatically when a query contains cascade|desc terms.
+ * 
+ * \ingroup queries
+ */
+#define EcsQueryGroupByDesc           (1u << 10u)
 
 
 /** Used with ecs_query_init().
@@ -1477,8 +1503,6 @@ typedef struct ecs_build_info_t {
 /** Type that contains information about the world. */
 typedef struct ecs_world_info_t {
     ecs_entity_t last_component_id;   /**< Last issued component entity ID. */
-    ecs_entity_t min_id;              /**< First allowed entity ID. */
-    ecs_entity_t max_id;              /**< Last allowed entity ID. */
 
     ecs_ftime_t delta_time_raw;       /**< Raw delta time (no time scaling). */
     ecs_ftime_t delta_time;           /**< Time passed to or computed by ecs_progress(). */
@@ -1543,6 +1567,16 @@ typedef struct ecs_query_group_info_t {
     int32_t table_count;  /**< Number of tables in group. */
     void *ctx;            /**< Group context, returned by on_group_create. */
 } ecs_query_group_info_t;
+
+/** Type that stores an entity id range.
+ * Returned by ecs_entity_range_new(), used with ecs_entity_range_set().
+ */
+typedef struct ecs_entity_range_t {
+    uint32_t min;           /**< First id in range (inclusive). */
+    uint32_t max;           /**< Last id in range (inclusive, 0 = unlimited). */
+    uint32_t cur;           /**< Last issued id in range. */
+    ecs_vec_t recycled;     /**< Recycled entity ids (vec<entity_t>). */
+} ecs_entity_range_t;
 
 /** @} */
 
@@ -2663,41 +2697,55 @@ FLECS_API
 void ecs_shrink(
     ecs_world_t *world);
 
-/** Set a range for issuing new entity IDs.
- * This function constrains the entity identifiers returned by ecs_new_w() to the
- * specified range. This operation can be used to ensure that multiple processes
- * can run in the same simulation without requiring a central service that
- * coordinates issuing identifiers.
+/** Create a new entity range.
+ * This function creates a range that constrains new entity identifiers returned 
+ * by the specified [min, max] interval. Each range maintains its own list of 
+ * recycled entity ids, which ensures that recycled ids always respect the 
+ * configured range. If `max` is set to 0, the range is unbounded.
  *
- * If `id_end` is set to 0, the range is infinite. If `id_end` is set to a non-zero
- * value, it has to be larger than `id_start`. If `id_end` is set and ecs_new() is
- * invoked after an ID is issued that is equal to `id_end`, the application will
- * abort.
+ * Entity ranges cannot be deleted once created. Use ecs_entity_range_set() to 
+ * activate a range.
  *
  * @param world The world.
- * @param id_start The start of the range.
- * @param id_end The end of the range.
+ * @param min The first entity id in the range (inclusive).
+ * @param max The last entity id in the range (inclusive, 0 = unlimited).
+ * @return A pointer to the new range. Does not need to be freed.
  */
 FLECS_API
-void ecs_set_entity_range(
+const ecs_entity_range_t* ecs_entity_range_new(
     ecs_world_t *world,
-    ecs_entity_t id_start,
-    ecs_entity_t id_end);
+    uint32_t min,
+    uint32_t max);
 
-/** Enable or disable range limits.
- * When an application is both a receiver of range-limited entities and a
- * producer of range-limited entities, range checking needs to be temporarily
- * disabled when inserting received entities. Range checking is disabled on a
- * stage, so setting this value is thread-safe.
+/** Set the active entity range.
+ * This function activates a range created with ecs_entity_range_new().
+ * When a range is activated, new entity identifiers will fall within the 
+ * specified [min, max] interval, including recycled identifiers.
+ *
+ * When the active range is out of available ids, operations that create new
+ * entity ids will assert.
+ * 
+ * The operation only accepts ranges that have been created by 
+ * ecs_entity_range_new().
  *
  * @param world The world.
- * @param enable True if range checking should be enabled, false to disable.
- * @return The previous value.
+ * @param range The range to activate.
  */
 FLECS_API
-bool ecs_enable_range_check(
+void ecs_entity_range_set(
     ecs_world_t *world,
-    bool enable);
+    const ecs_entity_range_t *range);
+
+/** Get the currently active entity id range.
+ * Returns the range set by ecs_entity_range_set(), or NULL if no range is
+ * active.
+ *
+ * @param world The world.
+ * @return The active range, or NULL.
+ */
+FLECS_API
+const ecs_entity_range_t* ecs_entity_range_get(
+    const ecs_world_t *world);
 
 /** Get the largest issued entity ID (not counting generation).
  *
@@ -2736,6 +2784,10 @@ typedef struct ecs_delete_empty_tables_desc_t {
 
     /** Amount of time operation is allowed to spend. */
     double time_budget_seconds;
+
+    /** Table index to start scanning at. The function loops around until it
+     * reaches this offset again, or until the time budget is exceeded. */
+    int32_t offset;
 } ecs_delete_empty_tables_desc_t;
 
 /** Clean up empty tables.
@@ -2763,9 +2815,15 @@ typedef struct ecs_delete_empty_tables_desc_t {
  *
  * The time budget specifies how long the operation should take at most.
  *
+ * The offset parameter specifies the table index at which to start scanning.
+ * The function loops around until it reaches this offset again, or until the
+ * time budget is exceeded.
+ *
  * @param world The world.
  * @param desc Configuration parameters.
- * @return The number of deleted tables.
+ * @return The index + 1 of the table where the function stopped, or 0 if the
+ *         function scanned all tables. The return value can be used as the
+ *         offset for the next call.
  */
 FLECS_API
 int32_t ecs_delete_empty_tables(
@@ -2933,8 +2991,7 @@ ecs_entity_t ecs_new_low_id(
     ecs_world_t *world);
 
 /** Create new entity with (component) ID.
- * This operation creates a new entity with an optional (component) ID. When 0
- * is passed to the ID parameter, no component is added to the new entity.
+ * This operation creates a new entity with an optional (component) ID.
  *
  * @param world The world.
  * @param component The component to create the new entity with.
@@ -3431,11 +3488,13 @@ void* ecs_ref_get_id(
  *
  * @param world The world.
  * @param ref The ref.
+ * @param component The component the ref was created with.
  */
 FLECS_ALWAYS_INLINE FLECS_API
 void ecs_ref_update(
     const ecs_world_t *world,
-    ecs_ref_t *ref);
+    ecs_ref_t *ref,
+    ecs_id_t component);
 
 /** Emplace a component.
  * Emplace is similar to ecs_ensure_id() except that the component constructor
@@ -4754,7 +4813,10 @@ bool ecs_children_next(
  */
 
 /** Create a query.
- * 
+ * If the descriptor specifies an existing entity, the entity must not already
+ * be associated with a query. To replace an existing query on an entity, use
+ * ecs_query_update().
+ *
  * @param world The world.
  * @param desc The descriptor (see ecs_query_desc_t).
  * @return The query.
@@ -4762,6 +4824,22 @@ bool ecs_children_next(
 FLECS_API
 ecs_query_t* ecs_query_init(
     ecs_world_t *world,
+    const ecs_query_desc_t *desc);
+
+/** Replace the query on an existing entity.
+ * Removes the query currently attached to the entity and creates a new one
+ * from the descriptor. Any handles to the previous query become invalid; use
+ * the returned handle for subsequent iteration.
+ *
+ * @param world The world.
+ * @param entity The entity that holds the query to replace.
+ * @param desc The descriptor (see ecs_query_desc_t).
+ * @return The new query, or NULL if the operation failed.
+ */
+FLECS_API
+ecs_query_t* ecs_query_update(
+    ecs_world_t *world,
+    ecs_entity_t entity,
     const ecs_query_desc_t *desc);
 
 /** Delete a query.
@@ -5278,6 +5356,10 @@ void ecs_enqueue(
  * Observers can subscribe for one or more terms. An observer only triggers
  * when the source of the event meets all terms.
  *
+ * If the descriptor specifies an existing entity, the entity must not already
+ * be associated with an observer. To modify an existing observer, use
+ * ecs_observer_update().
+ *
  * See the documentation for ecs_observer_desc_t for more details.
  *
  * @param world The world.
@@ -5287,6 +5369,27 @@ void ecs_enqueue(
 FLECS_API
 ecs_entity_t ecs_observer_init(
     ecs_world_t *world,
+    const ecs_observer_desc_t *desc);
+
+/** Update an existing observer.
+ * Updates the configuration of an observer that was previously created with
+ * ecs_observer_init(). Only fields in desc that are set to a non-default
+ * value will be applied; fields left at their default value preserve the
+ * existing configuration of the observer.
+ *
+ * The query and events fields of the descriptor are not used by this function;
+ * the observer query and event subscriptions cannot be modified after
+ * creation.
+ *
+ * @param world The world.
+ * @param observer The observer to update.
+ * @param desc The observer descriptor.
+ * @return The observer entity, or 0 if the operation failed.
+ */
+FLECS_API
+ecs_entity_t ecs_observer_update(
+    ecs_world_t *world,
+    ecs_entity_t observer,
     const ecs_observer_desc_t *desc);
 
 /** Get the observer object.
@@ -6508,6 +6611,7 @@ int ecs_value_copy(
  * @param src A pointer to the value to move.
  * @return Zero if successful, nonzero if failed.
  */
+FLECS_API
 int ecs_value_move_w_type_info(
     const ecs_world_t *world,
     const ecs_type_info_t *ti,
@@ -6522,6 +6626,7 @@ int ecs_value_move_w_type_info(
  * @param src A pointer to the value to move.
  * @return Zero if successful, nonzero if failed.
  */
+FLECS_API
 int ecs_value_move(
     const ecs_world_t *world,
     ecs_entity_t type,
@@ -6536,6 +6641,7 @@ int ecs_value_move(
  * @param src A pointer to the value to move.
  * @return Zero if successful, nonzero if failed.
  */
+FLECS_API
 int ecs_value_move_ctor_w_type_info(
     const ecs_world_t *world,
     const ecs_type_info_t *ti,
@@ -6550,6 +6656,7 @@ int ecs_value_move_ctor_w_type_info(
  * @param src A pointer to the value to move.
  * @return Zero if successful, nonzero if failed.
  */
+FLECS_API
 int ecs_value_move_ctor(
     const ecs_world_t *world,
     ecs_entity_t type,
