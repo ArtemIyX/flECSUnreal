@@ -146,6 +146,8 @@ struct ecs_script_function_t {
     ecs_function_callback_t callback;
     ecs_vector_function_callback_t vector_callbacks[FLECS_SCRIPT_VECTOR_FUNCTION_COUNT];
     void *ctx;
+    void *binding_ctx;
+    ecs_ctx_free_t binding_ctx_free;
 };
 
 /** Function component.
@@ -171,6 +173,8 @@ typedef struct ecs_script_eval_desc_t {
 /** Used to capture error output from script evaluation. */
 typedef struct ecs_script_eval_result_t {
     char *error;       /**< Error message, or NULL if no error. Must be freed by the application. */
+    int32_t line;      /**< Line number (1-based) of first error, or 0 if not available. */
+    int32_t column;    /**< Column number (1-based) of first error, or 0 if not available. */
 } ecs_script_eval_result_t;
 
 /** Parse script.
@@ -604,6 +608,11 @@ typedef struct ecs_expr_eval_desc_t {
     ecs_script_runtime_t *runtime;   /**< Reusable runtime (optional). */
 
     void *script_visitor;            /**< For internal usage. */
+
+    bool (*unresolved_identifier_action)( /**< For internal usage. */
+        const ecs_world_t*,
+        const char *value,
+        void *ctx);
 } ecs_expr_eval_desc_t;
 
 /** Run expression.

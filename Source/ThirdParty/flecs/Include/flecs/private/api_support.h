@@ -1,5 +1,5 @@
 /**
- * @file api_support.h
+ * @file private/api_support.h
  * @brief Support functions and constants.
  *
  * Supporting types and functions that need to be exposed either in support of 
@@ -213,12 +213,14 @@ const char* flecs_parse_ws_eol(
  *
  * @param ptr The expression to parse.
  * @param token The output buffer.
+ * @param token_size The size of the output buffer.
  * @return Pointer to the first non-digit character.
  */
 FLECS_API
 const char* flecs_parse_digit(
     const char *ptr,
-    char *token);
+    char *token,
+    int32_t token_size);
 
 /* Convert an identifier to snake case. */
 FLECS_API
@@ -368,27 +370,27 @@ FLECS_API
 bool flecs_query_trivial_cached_next(
     ecs_iter_t *it);
 
-#ifdef FLECS_DEBUG
+#ifdef FLECS_EXCLUSIVE_ACCESS
 /** Check if the current thread has exclusive access to the world.
  * This operation checks if the current thread is allowed to access the world.
  * The operation is called by internal functions before mutating the world, and
  * will panic if the current thread does not have exclusive access to the world.
- * 
+ *
  * Exclusive access is controlled by the ecs_exclusive_access_begin() and
  * ecs_exclusive_access_end() operations.
- * 
+ *
  * This operation is public so that it shows up in stack traces, but code such
  * as language bindings or wrappers could also use it to verify that the world
  * is accessed from the correct thread.
- * 
+ *
  * @param world The world.
  */
 FLECS_API
 void flecs_check_exclusive_world_access_write(
     const ecs_world_t *world);
 
-/** Same as flecs_check_exclusive_world_access_write(), but for read access. 
- * 
+/** Same as flecs_check_exclusive_world_access_write(), but for read access.
+ *
  * @param world The world.
  */
 FLECS_API

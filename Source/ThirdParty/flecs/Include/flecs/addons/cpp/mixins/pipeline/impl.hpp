@@ -11,13 +11,13 @@ namespace flecs {
 
 template <typename ... Components>
 struct pipeline : entity {
-    pipeline(world_t *world, ecs_pipeline_desc_t *desc) 
+    pipeline(world_t *world, const ecs_pipeline_desc_t *desc) 
         : entity(world)
     {
         id_ = ecs_pipeline_init(world, desc);
 
         if (!id_) {
-            ecs_abort(ECS_INVALID_PARAMETER, NULL);
+            ecs_abort(ECS_INVALID_PARAMETER, nullptr);
         }
     }
 };

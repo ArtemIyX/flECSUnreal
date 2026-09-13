@@ -63,7 +63,9 @@ void register_lifecycle_actions(
     ecs_entity_t component)
 {
     (void)world; (void)component;
-    if constexpr (!std::is_trivial<T>::value) {
+    if constexpr (!(std::is_trivially_default_constructible<T>::value &&
+        std::is_trivially_copyable<T>::value))
+    {
         // If the component is non-trivial, register component lifecycle actions.
         // Depending on the type, not all callbacks may be available.
         ecs_type_hooks_t cl{};
@@ -90,22 +92,66 @@ void register_lifecycle_actions(
 
 template <typename T>
 inline ecs_cpp_type_action_t lifecycle_action() {
-    if constexpr (std::is_trivial<T>::value) {
+    if constexpr (std::is_trivially_default_constructible<T>::value &&
+        std::is_trivially_copyable<T>::value)
+    {
         return nullptr;
     } else {
         return &register_lifecycle_actions<T>;
     }
 }
 
+#ifdef FLECS_META
+template <typename T, typename = void>
+struct has_cpp_meta_desc : std::false_type {};
+
+template <typename T>
+struct has_cpp_meta_desc<T, decltype(void(
+    flecs_meta_cpp_desc(static_cast<T*>(nullptr))))> : std::true_type {};
+#endif
+
 template <typename T>
 inline ecs_cpp_type_action_t enum_action() {
 #if FLECS_CPP_ENUM_REFLECTION_SUPPORT
+#ifdef FLECS_META
+    if constexpr (has_cpp_meta_desc<T>::value) {
+        return nullptr;
+    } else
+#endif
     if constexpr (is_enum_v<T>) {
         return &_::init_enum<T>;
+    } else {
+        return nullptr;
     }
-#endif
+#else
     return nullptr;
+#endif
 }
+
+#ifdef FLECS_META
+
+template <typename T>
+inline void register_cpp_meta(ecs_world_t *world, ecs_entity_t component) {
+    (void)world; (void)component;
+    if constexpr (has_cpp_meta_desc<T>::value) {
+        ecs_type_kind_t kind = flecs_meta_cpp_kind(static_cast<T*>(nullptr));
+        if (kind == EcsStructType && ecs_has_id(world, component,
+                ecs_id(EcsStruct))) {
+            return;
+        }
+        if (kind == EcsEnumType && ecs_has_id(world, component,
+                ecs_id(EcsEnum))) {
+            return;
+        }
+        if (kind == EcsBitmaskType && ecs_has_id(world, component,
+                ecs_id(EcsBitmask))) {
+            return;
+        }
+        ecs_meta_from_desc(world, component, kind,
+            flecs_meta_cpp_desc(static_cast<T*>(nullptr)));
+    }
+}
+#endif
 
 template <typename T>
 struct type_impl {
@@ -145,7 +191,7 @@ struct type_impl {
         flecs::id_t id = 0)                 // User-provided component ID
     {
         init(allow_tag);
-        ecs_assert(index() != 0, ECS_INTERNAL_ERROR, NULL);
+        ecs_assert(index() != 0, ECS_INTERNAL_ERROR, nullptr);
 
         ecs_cpp_component_desc_t desc = {
             id,
@@ -163,7 +209,11 @@ struct type_impl {
 
         flecs::entity_t c = ecs_cpp_component_register(world, &desc);
 
-        ecs_assert(c != 0, ECS_INTERNAL_ERROR, NULL);
+        ecs_assert(c != 0, ECS_INTERNAL_ERROR, nullptr);
+
+#ifdef FLECS_META
+        register_cpp_meta<T>(world, c);
+#endif
 
         return c;
     }
@@ -179,7 +229,7 @@ struct type_impl {
             type_name<T>());
 
         flecs::entity_t c = flecs_component_ids_get(world, index());
-        ecs_assert(c != 0, ECS_INTERNAL_ERROR, NULL);
+        ecs_assert(c != 0, ECS_INTERNAL_ERROR, nullptr);
         ecs_assert(ecs_is_alive(world, c), ECS_INVALID_OPERATION,
             "component '%s' was deleted, reregister before using",
             type_name<T>());
@@ -204,7 +254,7 @@ struct type_impl {
 
     // Was the component already registered?
     static bool registered(flecs::world_t *world) {
-        ecs_assert(world != nullptr, ECS_INVALID_PARAMETER, NULL);
+        ecs_assert(world != nullptr, ECS_INVALID_PARAMETER, nullptr);
 
         if (!flecs_component_ids_get(world, index())) {
             return false;
@@ -349,13 +399,13 @@ public:
 untyped_component& on_compare(
     ecs_cmp_t compare_callback)
 {
-    ecs_assert(compare_callback, ECS_INVALID_PARAMETER, NULL);
+    ecs_assert(compare_callback, ECS_INVALID_PARAMETER, nullptr);
     flecs::type_hooks_t h = get_hooks();
     h.cmp = compare_callback;
     h.flags &= ~ECS_TYPE_HOOK_CMP_ILLEGAL;
     if(h.flags & ECS_TYPE_HOOK_EQUALS_ILLEGAL) {
         h.flags &= ~ECS_TYPE_HOOK_EQUALS_ILLEGAL;
-        h.equals = NULL;
+        h.equals = nullptr;
     }
     set_hooks(h);
     return *this;
@@ -369,7 +419,7 @@ untyped_component& on_compare(
 untyped_component& on_equals(
     ecs_equals_t equals_callback)
 {
-    ecs_assert(equals_callback, ECS_INVALID_PARAMETER, NULL);
+    ecs_assert(equals_callback, ECS_INVALID_PARAMETER, nullptr);
     flecs::type_hooks_t h = get_hooks();
     h.equals = equals_callback;
     h.flags &= ~ECS_TYPE_HOOK_EQUALS_ILLEGAL;
@@ -498,7 +548,7 @@ struct component : untyped_component {
      */
     component<T>& on_compare() {
         ecs_cmp_t handler = _::compare<T>();
-        ecs_assert(handler != NULL, ECS_INVALID_OPERATION, 
+        ecs_assert(handler != nullptr, ECS_INVALID_OPERATION, 
             "Type does not have operator> or operator< const or is inaccessible");
         on_compare(handler);
         return *this;
@@ -524,7 +574,7 @@ struct component : untyped_component {
      */
     component<T>& on_equals() {
         ecs_equals_t handler = _::equals<T>();
-        ecs_assert(handler != NULL, ECS_INVALID_OPERATION, 
+        ecs_assert(handler != nullptr, ECS_INVALID_OPERATION, 
             "Type does not have operator== const or is inaccessible");
         on_equals(handler);
         return *this;
