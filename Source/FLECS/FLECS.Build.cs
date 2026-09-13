@@ -10,7 +10,7 @@ public class FLECS : ModuleRules
 		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
 
 		string thirdPartyPath = Path.Combine(ModuleDirectory, "..", "ThirdParty", "flecs");
-		string flecsIncludePath = Path.Combine(thirdPartyPath, "Include");
+		string flecsIncludePath = Path.Combine(thirdPartyPath, "include");
 		string flecsLibPath = Path.Combine(thirdPartyPath, "Lib", "Win64", "flecs_static.lib");
 		
 		PublicIncludePaths.AddRange(
