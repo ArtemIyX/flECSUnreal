@@ -1,4 +1,5 @@
 #include "Subsystems/FlecsGameInstanceSubsystem.h"
+#include "EcsEntityNames.h"
 #include "Engine/World.h"
 
 #include <atomic>
@@ -22,7 +23,6 @@ void UFlecsGameInstanceSubsystem::Deinitialize()
 	bIsProgressing = false;
 	ActiveWorld.Reset();
 	DestroyActiveWorldScope();
-	DestroyNetworkAccountScope();
 
 	for (TPair<FName, flecs::entity>& pair : PersistentSystems)
 	{
@@ -51,16 +51,6 @@ const flecs::world* UFlecsGameInstanceSubsystem::GetEcsWorld() const
 flecs::entity UFlecsGameInstanceSubsystem::GetActiveWorldScope() const
 {
 	return ActiveWorldScope;
-}
-
-flecs::entity UFlecsGameInstanceSubsystem::GetNetworkAccountScope() const
-{
-	return NetworkAccountScope;
-}
-
-flecs::entity UFlecsGameInstanceSubsystem::GetNetworkGameScope() const
-{
-	return NetworkGameScope;
 }
 
 FFlecsEntityHandle UFlecsGameInstanceSubsystem::MakeEntityHandle(ecs_entity_t InEntity) const
@@ -99,7 +89,8 @@ bool UFlecsGameInstanceSubsystem::ResolveEntityHandle(
 
 bool UFlecsGameInstanceSubsystem::IsEntityInScope(ecs_entity_t InEntity, flecs::entity InScope) const
 {
-	if (!EcsWorld.IsValid() || !InScope.is_valid() || !EcsWorld->is_alive(InEntity))
+	if (!EcsWorld.IsValid() || InScope.world().c_ptr() != EcsWorld->c_ptr() ||
+		!InScope.is_valid() || !EcsWorld->is_valid(InEntity) || !EcsWorld->is_alive(InEntity))
 	{
 		return false;
 	}
@@ -135,14 +126,23 @@ bool UFlecsGameInstanceSubsystem::AttachWorld(UWorld& InWorld)
 		return true;
 	}
 
+	if (UWorld* PreviousWorld = ActiveWorld.Get())
+	{
+		OnWorldAboutToDetach.Broadcast(*PreviousWorld);
+	}
+
 	DestroyActiveWorldScope();
 	ActiveWorld = &InWorld;
 	LastProgressFrame = MAX_uint64;
 
-	const FString scopeName = FString::Printf(TEXT("UnrealWorldScope_%llu"), ++WorldGeneration);
+	const FString scopeName = FString::Printf(
+		TEXT("%s_%llu"), UTF8_TO_TCHAR(FLECS::EntityNames::UnrealWorldScopePrefix), ++WorldGeneration);
 	FTCHARToUTF8 convertedName(*scopeName);
 	ActiveWorldScope = EcsWorld->entity(convertedName.Get());
-	NetworkGameScope = flecs::entity();
+	if (ActiveWorldScope.is_valid())
+	{
+		OnWorldAttached.Broadcast(InWorld);
+	}
 	return ActiveWorldScope.is_valid();
 }
 
@@ -153,9 +153,17 @@ void UFlecsGameInstanceSubsystem::DetachWorld(UWorld& InWorld)
 		return;
 	}
 
+	OnWorldAboutToDetach.Broadcast(InWorld);
 	ActiveWorld.Reset();
 	LastProgressFrame = MAX_uint64;
 	DestroyActiveWorldScope();
+}
+
+bool UFlecsGameInstanceSubsystem::IsWorldReady(const UWorld& InWorld) const
+{
+	return !bIsShuttingDown && !bIsProgressing && EcsWorld.IsValid() &&
+		ActiveWorld.Get() == &InWorld &&
+		ActiveWorldScope.is_valid() && ActiveWorldScope.world().c_ptr() == EcsWorld->c_ptr();
 }
 
 bool UFlecsGameInstanceSubsystem::ProgressFromWorld(UWorld& InWorld, float DeltaTime)
@@ -180,80 +188,6 @@ bool UFlecsGameInstanceSubsystem::ProgressFromWorld(UWorld& InWorld, float Delta
 FName UFlecsGameInstanceSubsystem::MakeWorldSystemName(FName InSystemName) const
 {
 	return FName(*FString::Printf(TEXT("World_%llu_%s"), WorldGeneration, *InSystemName.ToString()));
-}
-
-flecs::entity UFlecsGameInstanceSubsystem::CreatePersistentEntity(const char* InName)
-{
-	return EcsWorld.IsValid() ? EcsWorld->entity(InName) : flecs::entity();
-}
-
-flecs::entity UFlecsGameInstanceSubsystem::CreateAccountEntity(const char* InName)
-{
-	if (!EcsWorld.IsValid() || !NetworkAccountScope.is_valid())
-	{
-		return flecs::entity();
-	}
-
-	return EcsWorld->entity(InName).child_of(NetworkAccountScope);
-}
-
-flecs::entity UFlecsGameInstanceSubsystem::CreateWorldEntity(const char* InName)
-{
-	return CreateNetworkGameEntity(InName);
-}
-
-flecs::entity UFlecsGameInstanceSubsystem::CreateNetworkGameEntity(const char* InName)
-{
-	if (!EcsWorld.IsValid() || !NetworkGameScope.is_valid())
-	{
-		return flecs::entity();
-	}
-
-	return EcsWorld->entity(InName).child_of(NetworkGameScope);
-}
-
-flecs::entity UFlecsGameInstanceSubsystem::CreateNetworkAccountScope()
-{
-	DestroyNetworkAccountScope();
-	if (!EcsWorld.IsValid())
-	{
-		return flecs::entity();
-	}
-
-	NetworkAccountScope = EcsWorld->entity("NetworkAccountScope");
-	return NetworkAccountScope;
-}
-
-flecs::entity UFlecsGameInstanceSubsystem::CreateNetworkGameScope()
-{
-	DestroyNetworkGameScope();
-	if (!EcsWorld.IsValid() || !ActiveWorldScope.is_valid())
-	{
-		return flecs::entity();
-	}
-
-	NetworkGameScope = EcsWorld->entity("NetworkGameScope").child_of(ActiveWorldScope);
-	return NetworkGameScope;
-}
-
-void UFlecsGameInstanceSubsystem::DestroyNetworkAccountScope()
-{
-	if (EcsWorld.IsValid() && NetworkAccountScope.is_valid() &&
-		EcsWorld->is_alive(NetworkAccountScope.id()))
-	{
-		NetworkAccountScope.destruct();
-	}
-	NetworkAccountScope = flecs::entity();
-}
-
-void UFlecsGameInstanceSubsystem::DestroyNetworkGameScope()
-{
-	if (EcsWorld.IsValid() && NetworkGameScope.is_valid() &&
-		EcsWorld->is_alive(NetworkGameScope.id()))
-	{
-		NetworkGameScope.destruct();
-	}
-	NetworkGameScope = flecs::entity();
 }
 
 bool UFlecsGameInstanceSubsystem::UnregisterPersistentSystem(FName SystemName)
@@ -293,7 +227,6 @@ bool UFlecsGameInstanceSubsystem::UnregisterPersistentSystem(flecs::entity Syste
 
 void UFlecsGameInstanceSubsystem::DestroyActiveWorldScope()
 {
-	DestroyNetworkGameScope();
 	if (EcsWorld.IsValid() && ActiveWorldScope.is_valid() && EcsWorld->is_alive(ActiveWorldScope.id()))
 	{
 		ActiveWorldScope.destruct();

@@ -95,16 +95,6 @@ const flecs::world* UFlecsSubsystem::GetEcsWorld() const
 	return nullptr;
 }
 
-flecs::entity UFlecsSubsystem::CreatePersistentEntity(const char* InName)
-{
-	return GetOwnerSubsystem() ? GetOwnerSubsystem()->CreatePersistentEntity(InName) : flecs::entity();
-}
-
-flecs::entity UFlecsSubsystem::CreateWorldEntity(const char* InName)
-{
-	return GetOwnerSubsystem() ? GetOwnerSubsystem()->CreateWorldEntity(InName) : flecs::entity();
-}
-
 bool UFlecsSubsystem::UnregisterSystem(FName SystemName)
 {
 	flecs::entity* foundSystem = RuntimeSystems.Find(SystemName);

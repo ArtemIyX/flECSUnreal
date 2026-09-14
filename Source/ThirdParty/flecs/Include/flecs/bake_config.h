@@ -21,6 +21,7 @@
 /* No dependencies */
 
 /* Convenience macro for exporting symbols */
+#ifndef FLECS_API
 #ifndef flecs_STATIC
 #if defined(flecs_EXPORTS) && (defined(_MSC_VER) || defined(__MINGW32__))
   #define FLECS_API __declspec(dllexport)
@@ -34,6 +35,6 @@
 #else
   #define FLECS_API
 #endif
-
 #endif
 
+#endif
