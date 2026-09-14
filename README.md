@@ -12,7 +12,8 @@ This is an integration plugin only. It provides Unreal-side wiring (module + sub
 ## What This Plugin Is
 
 - A bridge between Unreal Engine and flecs.
-- A `UWorldSubsystem` (`UFlecsSubsystem`) that owns and updates a `flecs::world`.
+- A `UGameInstanceSubsystem` (`UFlecsGameInstanceSubsystem`) that owns one `flecs::world` per GameInstance.
+- A `UWorldSubsystem` (`UFlecsSubsystem`) bridge that binds the current world and advances Flecs in the configured tick group.
 - Runtime registration and unregistration of flecs systems.
 
 ## Current Support / Constraints
@@ -99,14 +100,13 @@ void AExampleActor::BeginPlay()
 		return;
 	}
 
-	flecs::world* Ecs = FlecsSubsystem->GetEcsWorld();
-	if (!Ecs)
+	flecs::entity Mover = FlecsSubsystem->CreateWorldEntity("Mover");
+	if (!Mover.is_valid())
 	{
 		return;
 	}
 
-	// Create one demo entity
-	Ecs->entity("Mover")
+	Mover
 		.set<DemoEcs::FPosition>({0.0f})
 		.set<DemoEcs::FMoveSpeed>({50.0f});
 
@@ -142,7 +142,10 @@ Path: `Project Settings -> Plugins -> FLECS`
 
 ## Notes
 
-- The subsystem is world-scoped and intended for gameplay worlds.
+- The Flecs world is GameInstance-scoped and survives level travel. Use `CreateWorldEntity` for map-local entities and `CreatePersistentEntity` for cross-level entities.
+- The world bridge is limited to gameplay worlds and advances Flecs at most once per Unreal frame. Zero or negative deltas are ignored.
+- GameInstances, including PIE instances, own isolated Flecs worlds. GameInstance subsystems do not replicate.
+- Persistence across process shutdown still requires SaveGame serialization.
 - If you update flecs version or platform support, update `FLECS.Build.cs`
 
 ## License

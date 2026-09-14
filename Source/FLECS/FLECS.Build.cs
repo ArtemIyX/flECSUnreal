@@ -37,7 +37,7 @@ public class FLECS : ModuleRules
 
 		if (Target.Platform == UnrealTargetPlatform.Win64)
 		{
-			PublicDefinitions.Add("flecs_STATIC");
+			PublicDefinitions.Add("FLECS_NDEBUG");
 			PublicAdditionalLibraries.Add(flecsLibPath);
 		}
 			

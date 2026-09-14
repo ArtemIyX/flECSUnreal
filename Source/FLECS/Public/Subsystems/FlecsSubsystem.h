@@ -8,13 +8,8 @@
 #include "Misc/Build.h"
 #include "Subsystems/FlecsGameInstanceSubsystem.h"
 
-#pragma push_macro("FLECS_API")
-#undef FLECS_API
-
 PRAGMA_DISABLE_UNREACHABLE_CODE_WARNINGS
 #include "flecs.h"
-
-#pragma pop_macro("FLECS_API")
 
 #include "FlecsSubsystem.generated.h"
 
@@ -42,8 +37,6 @@ public:
 	flecs::world* GetEcsWorld();
 	/** @brief Get const access to the owned Flecs world. */
 	const flecs::world* GetEcsWorld() const;
-	flecs::entity CreatePersistentEntity(const char* InName = nullptr);
-	flecs::entity CreateWorldEntity(const char* InName = nullptr);
 
 	/**
 	 * @brief Unregister and destroy a runtime system by name.
