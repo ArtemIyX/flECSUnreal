@@ -3,7 +3,7 @@
 ![Unreal Engine](https://img.shields.io/badge/Unreal%20Engine-5.x-black?logo=unrealengine)
 ![Platform](https://img.shields.io/badge/Platform-Win64-blue)
 ![Linking](https://img.shields.io/badge/Linking-Static%20Library-success)
-![flecs](https://img.shields.io/badge/flecs-4.1.5-orange)
+![flecs](https://img.shields.io/badge/flecs-4.1.6-orange)
 
 A lightweight Unreal Engine plugin that allows using the **flecs** ECS framework inside UE gameplay code.
 
