@@ -1,7 +1,6 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Data/Enums/FlecsTickPhase.h"
 #include "Data/Structs/FlecsDistanceUpdateRate.h"
 #include "Engine/DeveloperSettings.h"
 #include "FlecsDeveloperSettings.generated.h"
@@ -18,9 +17,6 @@ public:
 	{
 		return FName(TEXT("Plugins"));
 	}
-
-	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category="Plugin")
-	EFlecsTickPhase TickPhase = EFlecsTickPhase::PostPhysics;
 
 	/** Fixed worker simulation steps per second. Takes effect when the world is attached. */
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category="Simulation", meta=(ClampMin="1.0", ClampMax="240.0", Units="Hz"))
