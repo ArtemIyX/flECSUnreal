@@ -2,6 +2,9 @@
 #include "Diagnostics/FlecsNetworkDiagnosticsSubsystem.h"
 #include "Diagnostics/FlecsNetworkStats.h"
 #include "Networking/FlecsWorldMode.h"
+#include "Networking/FlecsSessionManifestEnvelope.h"
+#include "Networking/FlecsSpatialPublicationTransfer.h"
+#include "Networking/FlecsNetworkLimits.h"
 
 #include "Engine/World.h"
 #include "EngineUtils.h"
@@ -27,14 +30,8 @@ uint32 DefaultSessionProtocolVersion = 0;
 constexpr uint32 MaxTransportSchemaPayloadBytes = 1024;
 constexpr int32 MaxChannelUpdateRecords = 16384;
 constexpr uint64 MaxChannelUpdatePayloadBytes = 4 * 1024 * 1024;
-constexpr uint32 SpatialMetadataTypeId = 0x464c534d;
-constexpr uint32 LiveIdentityTypeId = 0x464c4944;
-constexpr uint32 SpatialPublicationCompleteTypeId = 0x464c5343;
-constexpr uint32 MaxPublishedLiveIdentities = 5000;
 constexpr int32 MaxRetirementBarriersQueuedPerTick = 16;
 constexpr int32 MaxPendingRetiredIncarnations = 1024;
-constexpr int32 MaxPeerOwnedEntities = 256;
-constexpr int32 SpatialMetadataPayloadFixedBytes = 55;
 constexpr float MaxPeerInterestDistance = 1000000.0f; // Match the relevance scheduler's accepted range.
 uint64 NextServerWorldEpoch = 0;
 uint64 NextConnectionIncarnation = 0;
@@ -99,49 +96,7 @@ TArray<FFlecsRelevanceTier> GetConfiguredDistanceTiers()
 	return Result;
 }
 
-void AppendU16(TArray<uint8>& Bytes, uint16 Value)
-{
-	Bytes.Add(static_cast<uint8>(Value >> 8));
-	Bytes.Add(static_cast<uint8>(Value));
-}
-
-void AppendU32(TArray<uint8>& Bytes, uint32 Value)
-{
-	Bytes.Add(static_cast<uint8>(Value >> 24));
-	Bytes.Add(static_cast<uint8>(Value >> 16));
-	Bytes.Add(static_cast<uint8>(Value >> 8));
-	Bytes.Add(static_cast<uint8>(Value));
-}
-
-void AppendU64(TArray<uint8>& Bytes, uint64 Value)
-{
-	AppendU32(Bytes, static_cast<uint32>(Value >> 32));
-	AppendU32(Bytes, static_cast<uint32>(Value));
-}
-
-uint16 ReadU16(TConstArrayView<uint8> Bytes, int32& Offset)
-{
-	const uint16 Value = static_cast<uint16>((static_cast<uint16>(Bytes[Offset]) << 8) | Bytes[Offset + 1]);
-	Offset += 2;
-	return Value;
-}
-
-uint32 ReadU32(TConstArrayView<uint8> Bytes, int32& Offset)
-{
-	const uint32 Value = (static_cast<uint32>(Bytes[Offset]) << 24) | (static_cast<uint32>(Bytes[Offset + 1]) << 16)
-					   | (static_cast<uint32>(Bytes[Offset + 2]) << 8) | Bytes[Offset + 3];
-	Offset += 4;
-	return Value;
-}
-
-uint64 ReadU64(TConstArrayView<uint8> Bytes, int32& Offset)
-{
-	const uint32 High = ReadU32(Bytes, Offset);
-	const uint32 Low = ReadU32(Bytes, Offset);
-	return (static_cast<uint64>(High) << 32) | Low;
-}
-
-bool EncodeSpatialMetadata(const FlecsSimulation::FSpatialEntityMetadata& Source, TArray<uint8>& OutBytes)
+bool ConvertSpatialMetadata(const FlecsSimulation::FSpatialEntityMetadata& Source, FFlecsSpatialEntity& OutEntity)
 {
 	if (!Source.Identity.IsValid() || !FlecsModRegistry::FRegistry::IsValidStableId(Source.Identity.DefinitionStableId)
 		|| Source.Identity.DefinitionStableId.Len() > static_cast<int32>(FlecsModRegistry::MaxStableIdLength)
@@ -150,137 +105,18 @@ bool EncodeSpatialMetadata(const FlecsSimulation::FSpatialEntityMetadata& Source
 		|| Source.Position.Y < MIN_int32 || Source.Position.Y > MAX_int32 || Source.Position.Z < MIN_int32
 		|| Source.Position.Z > MAX_int32 || !FMath::IsFinite(Source.RecommendedUpdateRateHz)
 		|| Source.RecommendedUpdateRateHz < 0.0f || Source.RecommendedUpdateRateHz > 60.0f)
-	{
 		return false;
-	}
-	OutBytes.Reset(SpatialMetadataPayloadFixedBytes + 1 + Source.Identity.DefinitionStableId.Len());
-	AppendU64(OutBytes, Source.Identity.ServerWorldEpoch);
-	AppendU32(OutBytes, Source.Identity.NetworkEntityId);
-	AppendU16(OutBytes, Source.Identity.Generation);
-	AppendU32(OutBytes, static_cast<uint32>(FMath::RoundToInt(Source.Position.X)));
-	AppendU32(OutBytes, static_cast<uint32>(FMath::RoundToInt(Source.Position.Y)));
-	AppendU32(OutBytes, static_cast<uint32>(FMath::RoundToInt(Source.Position.Z)));
-	AppendU64(OutBytes, Source.Revision);
-	AppendU64(OutBytes, Source.OwnerConnectionToken);
-	AppendU32(OutBytes, static_cast<uint32>(Source.Importance));
-	OutBytes.Add(Source.bAlwaysRelevant ? 1 : 0);
-	AppendU32(OutBytes, Source.EstimatedUpdateBytes);
-	uint32 RateBits = 0;
-	FMemory::Memcpy(&RateBits, &Source.RecommendedUpdateRateHz, sizeof(RateBits));
-	AppendU32(OutBytes, RateBits);
-	OutBytes.Add(static_cast<uint8>(Source.Identity.DefinitionStableId.Len()));
-	for (TCHAR Character : Source.Identity.DefinitionStableId)
-	{
-		if (Character > 0x7f)
-			return false;
-		OutBytes.Add(static_cast<uint8>(Character));
-	}
-	return OutBytes.Num() == SpatialMetadataPayloadFixedBytes + 1 + Source.Identity.DefinitionStableId.Len();
-}
-
-bool DecodeSpatialMetadata(TConstArrayView<uint8> Bytes, FFlecsSpatialEntity& OutEntity, FString& OutDefinitionStableId)
-{
-	if (Bytes.Num() < SpatialMetadataPayloadFixedBytes + 1)
-	{
-		return false;
-	}
-	int32 Offset = 0;
-	OutEntity.Key.WorldEpoch = ReadU64(Bytes, Offset);
-	OutEntity.Key.EntityId = ReadU32(Bytes, Offset);
-	OutEntity.Key.Generation = ReadU16(Bytes, Offset);
-	const int32 X = static_cast<int32>(ReadU32(Bytes, Offset));
-	const int32 Y = static_cast<int32>(ReadU32(Bytes, Offset));
-	const int32 Z = static_cast<int32>(ReadU32(Bytes, Offset));
-	OutEntity.Position = FVector3f(static_cast<float>(X), static_cast<float>(Y), static_cast<float>(Z));
-	OutEntity.Revision = ReadU64(Bytes, Offset);
-	OutEntity.OwnerConnectionId = ReadU64(Bytes, Offset);
-	OutEntity.Importance = static_cast<int32>(ReadU32(Bytes, Offset));
-	const uint8 Flags = Bytes[Offset++];
-	OutEntity.EstimatedUpdateBytes = ReadU32(Bytes, Offset);
-	const uint32 RateBits = ReadU32(Bytes, Offset);
-	FMemory::Memcpy(&OutEntity.RecommendedUpdateRateHz, &RateBits, sizeof(RateBits));
-	const uint8 StableIdLength = Bytes[Offset++];
-	if (StableIdLength == 0 || StableIdLength > FlecsModRegistry::MaxStableIdLength
-		|| Offset + StableIdLength != Bytes.Num())
-	{
-		return false;
-	}
-	OutDefinitionStableId.Reset(StableIdLength);
-	for (uint8 Index = 0; Index < StableIdLength; ++Index)
-	{
-		const uint8 Character = Bytes[Offset++];
-		if (Character > 0x7f)
-			return false;
-		OutDefinitionStableId.AppendChar(static_cast<TCHAR>(Character));
-	}
-	OutEntity.bAlwaysRelevant = (Flags & 1) != 0;
+	OutEntity.Key = {Source.Identity.ServerWorldEpoch, Source.Identity.NetworkEntityId, Source.Identity.Generation};
+	OutEntity.Position = FVector3f(static_cast<float>(FMath::RoundToInt(Source.Position.X)),
+		static_cast<float>(FMath::RoundToInt(Source.Position.Y)), static_cast<float>(FMath::RoundToInt(Source.Position.Z)));
+	OutEntity.Revision = Source.Revision;
+	OutEntity.OwnerConnectionId = Source.OwnerConnectionToken;
+	OutEntity.Importance = Source.Importance;
+	OutEntity.EstimatedUpdateBytes = Source.EstimatedUpdateBytes;
+	OutEntity.RecommendedUpdateRateHz = Source.RecommendedUpdateRateHz;
+	OutEntity.bAlwaysRelevant = Source.bAlwaysRelevant;
 	OutEntity.Visibility = EFlecsNetworkVisibility::RelevantToAll;
-	return Offset == Bytes.Num() && OutEntity.Key.IsValid() && (Flags & ~1) == 0
-		&& FlecsModRegistry::FRegistry::IsValidStableId(OutDefinitionStableId)
-		&& FMath::IsFinite(OutEntity.RecommendedUpdateRateHz) && OutEntity.RecommendedUpdateRateHz >= 0.0f
-		&& OutEntity.RecommendedUpdateRateHz <= 60.0f;
-}
-
-bool EncodeLiveIdentities(uint64 WorldEpoch, uint32 SimulationTick,
-	const TArray<FlecsSimulation::FNetworkEntityIdentity>& Identities, TArray<uint8>& OutBytes)
-{
-	if (WorldEpoch == 0 || SimulationTick == 0 || Identities.Num() > static_cast<int32>(MaxPublishedLiveIdentities))
-		return false;
-	OutBytes.Reset(16 + Identities.Num() * 6);
-	AppendU64(OutBytes, WorldEpoch);
-	AppendU32(OutBytes, SimulationTick);
-	AppendU32(OutBytes, static_cast<uint32>(Identities.Num()));
-	TSet<uint32> SeenEntityIds;
-	SeenEntityIds.Reserve(Identities.Num());
-	for (const FlecsSimulation::FNetworkEntityIdentity& Identity : Identities)
-	{
-		if (!Identity.IsValid() || Identity.ServerWorldEpoch != WorldEpoch
-			|| SeenEntityIds.Contains(Identity.NetworkEntityId))
-		{
-			return false;
-		}
-		SeenEntityIds.Add(Identity.NetworkEntityId);
-		AppendU32(OutBytes, Identity.NetworkEntityId);
-		AppendU16(OutBytes, Identity.Generation);
-	}
 	return true;
-}
-
-bool DecodeLiveIdentities(TConstArrayView<uint8> Bytes, uint64 ExpectedWorldEpoch, uint32& OutSimulationTick,
-	TArray<FFlecsNetworkEntityKey>& OutKeys)
-{
-	OutSimulationTick = 0;
-	OutKeys.Reset();
-	if (Bytes.Num() < 16)
-		return false;
-	int32 Offset = 0;
-	const uint64 WorldEpoch = ReadU64(Bytes, Offset);
-	const uint32 SimulationTick = ReadU32(Bytes, Offset);
-	const uint32 Count = ReadU32(Bytes, Offset);
-	if (WorldEpoch == 0 || WorldEpoch != ExpectedWorldEpoch || SimulationTick == 0 || Count > MaxPublishedLiveIdentities
-		|| Bytes.Num() != 16 + static_cast<int64>(Count) * 6)
-	{
-		return false;
-	}
-	OutKeys.Reserve(static_cast<int32>(Count));
-	TSet<uint32> SeenEntityIds;
-	SeenEntityIds.Reserve(static_cast<int32>(Count));
-	for (uint32 Index = 0; Index < Count; ++Index)
-	{
-		FFlecsNetworkEntityKey Key;
-		Key.WorldEpoch = WorldEpoch;
-		Key.EntityId = ReadU32(Bytes, Offset);
-		Key.Generation = ReadU16(Bytes, Offset);
-		if (!Key.IsValid() || SeenEntityIds.Contains(Key.EntityId))
-		{
-			OutKeys.Reset();
-			return false;
-		}
-		SeenEntityIds.Add(Key.EntityId);
-		OutKeys.Add(Key);
-	}
-	OutSimulationTick = SimulationTick;
-	return Offset == Bytes.Num();
 }
 
 bool ValidateManifestTransportLimits(const FlecsModRegistry::FManifestDescriptor& Descriptor, FString& OutError)
@@ -341,11 +177,22 @@ struct FFlecsGenericPeerSchedulingRuntime
 	bool bPeerSpawnQueued = false;
 	bool bSpawnPending = false;
 	bool bPendingInitialSpawn = false;
+	bool bReportedBaselineLimit = false;
+	bool bReportedOversizedEntity = false;
+	uint32 CapacityRetryMaxRecords = 0;
+	TMap<FFlecsNetworkEntityKey, double> CapacityBlockedUntil;
 	uint64 PendingSpawnRequestId = 0;
 };
 
 struct FFlecsGenericWorkerBridgeState
 {
+	struct FCompletedSpatialSnapshot
+	{
+		FFlecsSpatialSnapshot Snapshot;
+		FFlecsSpatialIndex Index;
+		TMap<FFlecsNetworkEntityKey, FString> DefinitionStableIds;
+		TMap<FFlecsNetworkEntityKey, int32> Indices;
+	};
 	struct FCompletedDelta
 	{
 		uint64 LocalAttachmentEpoch = 0;
@@ -393,8 +240,21 @@ struct FFlecsGenericWorkerBridgeState
 	};
 
 	FCriticalSection ResultMutex;
+	FlecsSpatialTransfer::FMailbox SpatialMailbox;
+	FlecsSpatialTransfer::FHeartbeat Heartbeat;
+	FlecsSpatialTransfer::FAssembler SpatialAssembler; // game thread only
+	TSharedPtr<FCompletedSpatialSnapshot> CompletedSpatialSnapshot; // game thread only
+	TArray<FlecsSimulation::FNetworkEntityIdentity> TransferIdentities; // worker only
+	TArray<FlecsSimulation::FSpatialEntityMetadata> TransferMetadata; // worker only
+	int32 TransferIdentityOffset = 0;
+	int32 TransferMetadataOffset = 0;
+	uint64 TransferGeneration = 0;
+	uint32 TransferTick = 0;
+	uint32 TransferChunkIndex = 0;
+	bool bTransferActive = false;
 	std::atomic<bool> bLifecycleRetired{false};         // set on the game thread, read by worker callbacks
 	std::atomic<bool> bAuthoritativeModelFailed{false}; // worker signals an unrecoverable model failure
+	std::atomic<uint64> TransferArrayBytes{0}; // worker-owned captured array storage only
 	TMap<uint64, FCompletedDelta> CompletedDeltas;
 	TMap<uint64, FClientApplyResult> ClientApplyResults;
 	TMap<uint64, FSpawnResult> SpawnResults;
@@ -445,6 +305,16 @@ void UFlecsNetworkSessionSubsystem::Initialize(FSubsystemCollectionBase& Collect
 {
 	Super::Initialize(Collection);
 	check(IsInGameThread());
+	if (const UFlecsDeveloperSettings* Settings = GetDefault<UFlecsDeveloperSettings>())
+	{
+		FFlecsNetworkLimits Limits;
+		const bool bSettingsValid = FFlecsNetworkLimits::Capture(*Settings, Limits);
+		SessionLimits = Limits;
+		if (!bSettingsValid)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("Invalid Flecs networking limits were clamped for this session."));
+		}
+	}
 	WorkerBridgeState = MakeShared<FFlecsGenericWorkerBridgeState, ESPMode::ThreadSafe>();
 	SessionProtocolVersion = DefaultSessionProtocolVersion;
 	TryConfigureSession();
@@ -513,6 +383,8 @@ void UFlecsNetworkSessionSubsystem::Deinitialize()
 	if (WorkerBridgeState.IsValid())
 	{
 		WorkerBridgeState->bLifecycleRetired.store(true, std::memory_order_release);
+		WorkerBridgeState->SpatialAssembler.Reset();
+		WorkerBridgeState->CompletedSpatialSnapshot.Reset();
 	}
 	if (UFlecsGameInstanceSubsystem* FlecsSubsystem = FlecsGameInstanceSubsystem.Get())
 	{
@@ -808,99 +680,114 @@ void UFlecsNetworkSessionSubsystem::ProcessServerReplication()
 	{
 		return;
 	}
+	const uint64 ProcessingLocalEpoch = LocalAttachmentEpoch;
 	if (WorkerBridgeState->bAuthoritativeModelFailed.load(std::memory_order_acquire))
 	{
 		UE_LOG(LogTemp, Error,
 			TEXT("Flecs authoritative worker model failed; closing network sessions until worker replacement."));
-		for (TPair<TWeakObjectPtr<APlayerController>, FPeerSession>& Pair : PeerSessions)
+		TArray<TWeakObjectPtr<APlayerController>> FailedControllers;
+		PeerSessions.GenerateKeyArray(FailedControllers);
+		for (const TWeakObjectPtr<APlayerController>& Controller : FailedControllers)
 		{
-			RejectPeerManifest(Pair.Value.Incarnation, TEXT("The authoritative simulation worker is unavailable."));
+			if (const FPeerSession* Session = PeerSessions.Find(Controller))
+				RejectPeerManifest(Session->Incarnation, TEXT("The authoritative simulation worker is unavailable."));
+			if (bIsClosing)
+				return;
 		}
 		bRetirementFailClosed = true;
 		return;
 	}
-	const TSharedPtr<const FFlecsSimulationDataPublication, ESPMode::ThreadSafe> Publication =
-		FlecsSubsystem->GetDataPublication();
-	if (!Publication.IsValid() || Publication->LocalAttachmentEpoch != LocalAttachmentEpoch
-		|| Publication->SimulationTick == 0)
+	uint32 HeartbeatTick = 0;
+	WorkerBridgeState->Heartbeat.Read(ProcessingLocalEpoch, HeartbeatTick);
+	if (HeartbeatTick != 0)
 	{
-		return;
-	}
-	FFlecsSpatialSnapshot Snapshot;
-	TMap<FFlecsNetworkEntityKey, FString> DefinitionStableIdsByEntity;
-	Snapshot.WorldEpoch = ServerWorldEpoch;
-	uint32 PublishedModelTick = 0;
-	uint32 CompletedModelTick = 0;
-	bool bReceivedCompleteLiveIdentitySet = false;
-	bool bReceivedSpatialCompletion = false;
-	for (const FFlecsSimulationDataItem& Item : Publication->Items)
-	{
-		if (Item.TypeId == SpatialPublicationCompleteTypeId)
+		for (TPair<TWeakObjectPtr<APlayerController>, FPeerSession>& Pair : PeerSessions)
 		{
-			if (bReceivedSpatialCompletion || Item.Payload.Num() != 4)
-				return;
-			int32 Offset = 0;
-			CompletedModelTick = ReadU32(Item.Payload, Offset);
-			bReceivedSpatialCompletion = true;
-			continue;
+			FPeerSession& Session = Pair.Value;
+			AFlecsReplicationChannel* Channel = Session.Channel.Get();
+			if (Session.State == EFlecsPeerSessionState::Compatible && IsValid(Channel)
+				&& Session.ServerWorldEpoch == ServerWorldEpoch)
+				Channel->PublishServerTickHeartbeat(ServerWorldEpoch, HeartbeatTick);
 		}
-		if (Item.TypeId == LiveIdentityTypeId)
+	}
+	FlecsSpatialTransfer::FChunk ReceivedChunk;
+	const bool bReceivedChunk = WorkerBridgeState->SpatialMailbox.TryReceive(ReceivedChunk);
+	bool bNewSnapshot = false;
+	if (bReceivedChunk)
+	{
+		if (!WorkerBridgeState->SpatialAssembler.Add(MoveTemp(ReceivedChunk), LocalAttachmentEpoch,
+				ServerWorldEpoch, SessionLimits.MaxEntities))
 		{
-			if (bReceivedCompleteLiveIdentitySet
-				|| !DecodeLiveIdentities(
-					Item.Payload, Snapshot.WorldEpoch, PublishedModelTick, Snapshot.LiveEntityKeys))
+			UE_LOG(LogTemp, Warning, TEXT("Discarded an invalid or stale Flecs spatial publication chunk."));
+		}
+		else
+		{
+			TArray<FlecsSimulation::FNetworkEntityIdentity> Identities;
+			TArray<FlecsSimulation::FSpatialEntityMetadata> Metadata;
+			uint32 PublishedTick = 0;
+			if (WorkerBridgeState->SpatialAssembler.Take(Identities, Metadata, PublishedTick))
 			{
-				return;
+				TSharedPtr<FFlecsGenericWorkerBridgeState::FCompletedSpatialSnapshot> Candidate =
+					MakeShared<FFlecsGenericWorkerBridgeState::FCompletedSpatialSnapshot>();
+				Candidate->Snapshot.WorldEpoch = ServerWorldEpoch;
+				Candidate->Snapshot.SimulationTick = PublishedTick;
+				Candidate->Snapshot.bHasCompleteLiveEntitySet = true;
+				Candidate->Snapshot.LiveEntityKeys.Reserve(Identities.Num());
+				for (const FlecsSimulation::FNetworkEntityIdentity& Identity : Identities)
+				{
+					Candidate->Snapshot.LiveEntityKeys.Add({Identity.ServerWorldEpoch, Identity.NetworkEntityId, Identity.Generation});
+				}
+				Candidate->Snapshot.Entities.Reserve(Metadata.Num());
+				for (const FlecsSimulation::FSpatialEntityMetadata& Source : Metadata)
+				{
+					FFlecsSpatialEntity Entity;
+					if (!ConvertSpatialMetadata(Source, Entity))
+						continue; // The complete identity set still prevents a false despawn.
+					Candidate->DefinitionStableIds.Add(Entity.Key, Source.Identity.DefinitionStableId);
+					Candidate->Indices.Add(Entity.Key, Candidate->Snapshot.Entities.Num());
+					Candidate->Snapshot.Entities.Add(MoveTemp(Entity));
+				}
+				if (Candidate->Index.Build(Candidate->Snapshot))
+				{
+					WorkerBridgeState->CompletedSpatialSnapshot = MoveTemp(Candidate);
+					bNewSnapshot = true;
+				}
+				else
+				{
+					UE_LOG(LogTemp, Warning, TEXT("Discarded an invalid complete Flecs spatial publication."));
+				}
 			}
-			bReceivedCompleteLiveIdentitySet = true;
-			continue;
+			else if (WorkerBridgeState->SpatialAssembler.WasRejected())
+			{
+				UE_LOG(LogTemp, Warning, TEXT("Discarded a Flecs spatial publication with conflicting identities."));
+			}
 		}
-		if (Item.TypeId != SpatialMetadataTypeId)
-		{
-			continue;
-		}
-		FFlecsSpatialEntity Entity;
-		FString DefinitionStableId;
-		if (!DecodeSpatialMetadata(Item.Payload, Entity, DefinitionStableId))
-		{
-			return;
-		}
-		if (Entity.Key.WorldEpoch != Snapshot.WorldEpoch)
-		{
-			return;
-		}
-		DefinitionStableIdsByEntity.Add(Entity.Key, MoveTemp(DefinitionStableId));
-		Snapshot.Entities.Add(MoveTemp(Entity));
 	}
-	if (!bReceivedCompleteLiveIdentitySet || !bReceivedSpatialCompletion || CompletedModelTick != PublishedModelTick
-		|| Snapshot.WorldEpoch == 0 || Snapshot.WorldEpoch != ServerWorldEpoch)
-	{
+	// Hold the snapshot through session callbacks that may detach the world and clear the cache.
+	const TSharedPtr<FFlecsGenericWorkerBridgeState::FCompletedSpatialSnapshot> CompletedSpatial =
+		WorkerBridgeState->CompletedSpatialSnapshot;
+	if (!CompletedSpatial.IsValid() || CompletedSpatial->Snapshot.WorldEpoch != ServerWorldEpoch)
 		return;
-	}
-	Snapshot.bHasCompleteLiveEntitySet = true;
-	Snapshot.SimulationTick = PublishedModelTick;
-	for (TPair<TWeakObjectPtr<APlayerController>, FPeerSession>& Pair : PeerSessions)
-	{
-		FPeerSession& Session = Pair.Value;
-		AFlecsReplicationChannel* Channel = Session.Channel.Get();
-		if (Session.State == EFlecsPeerSessionState::Compatible && IsValid(Channel)
-			&& Session.ServerWorldEpoch == ServerWorldEpoch)
-		{
-			Channel->PublishServerTickHeartbeat(ServerWorldEpoch, PublishedModelTick);
-		}
-	}
-
-	FFlecsSpatialIndex SpatialIndex;
-	if (!SpatialIndex.Build(Snapshot))
-	{
-		return;
-	}
+	const FFlecsSpatialSnapshot& Snapshot = CompletedSpatial->Snapshot;
+	const FFlecsSpatialIndex& SpatialIndex = CompletedSpatial->Index;
+	const TMap<FFlecsNetworkEntityKey, FString>& DefinitionStableIdsByEntity = CompletedSpatial->DefinitionStableIds;
+	const TMap<FFlecsNetworkEntityKey, int32>& SpatialIndicesByEntity = CompletedSpatial->Indices;
 	const double NowSeconds = FPlatformTime::Seconds();
-	if (auto* Diagnostics = World->GetSubsystem<UFlecsNetworkDiagnosticsSubsystem>())
-		Diagnostics->ResetRelevance();
-	for (TPair<TWeakObjectPtr<APlayerController>, FPeerSession>& Pair : PeerSessions)
+	if (bNewSnapshot)
 	{
-		FPeerSession& Session = Pair.Value;
+		if (auto* Diagnostics = World->GetSubsystem<UFlecsNetworkDiagnosticsSubsystem>())
+			Diagnostics->ResetRelevance();
+	}
+	TArray<TWeakObjectPtr<APlayerController>> Controllers;
+	PeerSessions.GenerateKeyArray(Controllers);
+	for (const TWeakObjectPtr<APlayerController>& ControllerKey : Controllers)
+	{
+		if (bIsClosing || LocalAttachmentEpoch != ProcessingLocalEpoch)
+			return;
+		FPeerSession* FoundSession = PeerSessions.Find(ControllerKey);
+		if (!FoundSession)
+			continue;
+		FPeerSession& Session = *FoundSession;
 		AFlecsReplicationChannel* Channel = Session.Channel.Get();
 		if (Session.State != EFlecsPeerSessionState::Compatible || !IsValid(Channel)
 			|| Session.ServerWorldEpoch != Snapshot.WorldEpoch || !Session.Runtime.IsValid())
@@ -908,6 +795,12 @@ void UFlecsNetworkSessionSubsystem::ProcessServerReplication()
 			continue;
 		}
 		FFlecsGenericPeerSchedulingRuntime& Runtime = *Session.Runtime;
+		for (auto It = Runtime.CapacityBlockedUntil.CreateIterator(); It; ++It)
+		{
+			const int32* Index = SpatialIndicesByEntity.Find(It.Key());
+			if (!Index || NowSeconds >= It.Value())
+				It.RemoveCurrent();
+		}
 		FFlecsGenericWorkerBridgeState::FSpawnResult SpawnResult;
 		bool bHasSpawnResult = false;
 		{
@@ -943,6 +836,10 @@ void UFlecsNetworkSessionSubsystem::ProcessServerReplication()
 			Event.SpawnResult = SpawnResult.Result;
 			Event.SpawnedIdentity = SpawnResult.Identity;
 			OnSessionEvent.Broadcast(Event);
+			if (bIsClosing || LocalAttachmentEpoch != ProcessingLocalEpoch)
+				return;
+			if (Session.State != EFlecsPeerSessionState::Compatible)
+				continue;
 			if (bWasInitial && SpawnResult.Result != FlecsSimulation::EModelResult::Accepted)
 			{
 				RejectPeerManifest(Session.Incarnation, TEXT("The worker rejected the peer's initial entity spawn."));
@@ -951,7 +848,7 @@ void UFlecsNetworkSessionSubsystem::ProcessServerReplication()
 		}
 		if (!Runtime.bPeerSpawnQueued && !Runtime.bSpawnPending && PeerSpawnFactory)
 		{
-			APlayerController* SpawnController = Pair.Key.Get();
+			APlayerController* SpawnController = ControllerKey.Get();
 			if (!IsValid(SpawnController))
 			{
 				continue;
@@ -963,7 +860,12 @@ void UFlecsNetworkSessionSubsystem::ProcessServerReplication()
 			SpawnContext.ServerWorldEpoch = Session.ServerWorldEpoch;
 			SpawnContext.Controller = SpawnController;
 			SpawnContext.ViewPosition = SpawnController->GetFocalLocation();
-			if (!PeerSpawnFactory(SpawnContext, SpawnRequest, SpawnError) || SpawnRequest.DefinitionStableId.IsEmpty())
+			const bool bSpawnFactorySucceeded = PeerSpawnFactory(SpawnContext, SpawnRequest, SpawnError);
+			if (bIsClosing || LocalAttachmentEpoch != ProcessingLocalEpoch)
+				return;
+			if (Session.State != EFlecsPeerSessionState::Compatible)
+				continue;
+			if (!bSpawnFactorySucceeded || SpawnRequest.DefinitionStableId.IsEmpty())
 			{
 				RejectPeerManifest(Session.Incarnation,
 					SpawnError.IsEmpty() ? TEXT("The peer spawn factory returned an invalid request.")
@@ -1018,6 +920,8 @@ void UFlecsNetworkSessionSubsystem::ProcessServerReplication()
 				Runtime.bModelAckPending = false;
 				Runtime.bModelAckQueued = false;
 				Runtime.bTransferSucceeded = false;
+				Runtime.CapacityRetryMaxRecords = 0;
+				Runtime.CapacityBlockedUntil.Reset();
 			}
 			continue;
 		}
@@ -1060,6 +964,32 @@ void UFlecsNetworkSessionSubsystem::ProcessServerReplication()
 				Runtime.bSnapshotRequestPending = false;
 				continue;
 			}
+			if (bCurrentSelection && Completed.Result == FlecsSimulation::EModelResult::CapacityDeferred)
+			{
+				// The worker did not stage a delta. Keep acknowledged baselines and retry later.
+				if (auto* Diagnostics = World->GetSubsystem<UFlecsNetworkDiagnosticsSubsystem>())
+					Diagnostics->AddRelevance(0, 0, static_cast<uint32>(Runtime.PendingSelection.Records.Num()));
+				if (!Runtime.bReportedBaselineLimit)
+				{
+					UE_LOG(LogTemp, Warning, TEXT("Flecs peer update deferred: a bounded batch or retained baseline limit was reached."));
+					Runtime.bReportedBaselineLimit = true;
+				}
+				if (Runtime.PendingSelection.Records.Num() == 1)
+				{
+					const FFlecsScheduledEntity& Record = Runtime.PendingSelection.Records[0];
+					if (Record.Transition != EFlecsRelevanceTransition::Exit)
+						Runtime.CapacityBlockedUntil.Add(Record.Key, NowSeconds + 1.0);
+				}
+				Runtime.CapacityRetryMaxRecords = FMath::Max(1u,
+					static_cast<uint32>(Runtime.PendingSelection.Records.Num()) / 2u);
+				Runtime.Scheduler.CompleteSelection(Runtime.PendingSelection.SelectionId, false, NowSeconds);
+				Runtime.PendingSelection = FFlecsRelevanceSelection();
+				Runtime.PendingEntityKeys.Empty();
+				Runtime.bSnapshotRequestPending = false;
+				continue;
+			}
+			if (Completed.Result == FlecsSimulation::EModelResult::Accepted)
+				Runtime.bReportedBaselineLimit = false;
 			bool bValidDelta = bCurrentSelection && Completed.Result == FlecsSimulation::EModelResult::Accepted
 							&& !Completed.Batch.bCompleteStateSnapshot;
 			TArray<FFlecsReplicationRecord> WireRecords;
@@ -1198,7 +1128,10 @@ void UFlecsNetworkSessionSubsystem::ProcessServerReplication()
 		{
 			continue;
 		}
-		APlayerController* Controller = Pair.Key.Get();
+		// Complete in-flight acknowledgements every frame, but schedule only from new snapshots.
+		if (!bNewSnapshot)
+			continue;
+		APlayerController* Controller = ControllerKey.Get();
 		FlecsModRegistry::FSessionMapping Mapping;
 		if (!IsValid(Controller) || !GetPeerSessionMapping(Session.Incarnation, Mapping))
 		{
@@ -1210,9 +1143,7 @@ void UFlecsNetworkSessionSubsystem::ProcessServerReplication()
 		Interest.ViewPosition = FVector3f(static_cast<float>(FocalLocation.X), static_cast<float>(FocalLocation.Y),
 			static_cast<float>(FocalLocation.Z));
 		Interest.Tiers = GetConfiguredDistanceTiers();
-		FFlecsRelevanceBudget Budget;
-		Budget.MaxRecords = 128;
-		Budget.MaxBytes = 64 * 1024;
+		FFlecsRelevanceBudget Budget = SessionLimits.MakeSelectionBudget();
 		if (PeerInterestProvider)
 		{
 			FFlecsPeerSpawnContext Context;
@@ -1221,7 +1152,12 @@ void UFlecsNetworkSessionSubsystem::ProcessServerReplication()
 			Context.Controller = Controller;
 			Context.ViewPosition = FocalLocation;
 			FString InterestError;
-			if (!PeerInterestProvider(Context, Interest, Budget, InterestError))
+			const bool bInterestProvided = PeerInterestProvider(Context, Interest, Budget, InterestError);
+			if (bIsClosing || LocalAttachmentEpoch != ProcessingLocalEpoch)
+				return;
+			if (Session.State != EFlecsPeerSessionState::Compatible)
+				continue;
+			if (!bInterestProvided)
 			{
 				RejectPeerManifest(Session.Incarnation,
 					InterestError.IsEmpty() ? TEXT("The peer interest provider rejected the connection.")
@@ -1237,26 +1173,36 @@ void UFlecsNetworkSessionSubsystem::ProcessServerReplication()
 				TEXT("The peer interest view, tiers, overrides, or budget is invalid or over limit."));
 			continue;
 		}
+		if (Runtime.CapacityRetryMaxRecords > 0)
+			Budget.MaxRecords = FMath::Min(Budget.MaxRecords, Runtime.CapacityRetryMaxRecords);
 		FFlecsRelevanceSelection Selection;
 		bool bSelected = false;
 		{
 			SCOPE_CYCLE_COUNTER(STAT_FlecsNetworkSelect);
-			bSelected = Runtime.Scheduler.Select(SpatialIndex, Interest, NowSeconds, Budget, Selection);
+			bSelected = Runtime.Scheduler.Select(SpatialIndex, Interest, NowSeconds, Budget, Selection,
+				static_cast<uint32>(SessionLimits.MaxRelevantEntitiesPerPeer), &Runtime.CapacityBlockedUntil);
 		}
 		if (!bSelected)
-			continue;
-		if (auto* Diagnostics = World->GetSubsystem<UFlecsNetworkDiagnosticsSubsystem>())
-			Diagnostics->AddRelevance(Selection.Metrics.CurrentlyRelevant, Selection.Metrics.SelectedRecords,
-				Selection.Metrics.DeferredByBudget);
-		if (Selection.Metrics.OversizedEntityCount > 0)
 		{
-			const FFlecsNetworkEntityKey& Oversized = Selection.Metrics.FirstOversizedEntity;
-			RejectPeerManifest(Session.Incarnation,
-				FString::Printf(
-					TEXT("Entity %u generation %u has an indivisible update estimate above the per-peer byte budget."),
-					Oversized.EntityId, static_cast<uint32>(Oversized.Generation)));
+			if (Selection.Metrics.bIdentityHistoryExhausted)
+				RejectPeerManifest(Session.Incarnation, TEXT("Flecs relevance identity history capacity was exhausted."));
 			continue;
 		}
+		if (auto* Diagnostics = World->GetSubsystem<UFlecsNetworkDiagnosticsSubsystem>())
+			Diagnostics->AddRelevance(Selection.Metrics.CurrentlyRelevant, Selection.Metrics.SelectedRecords,
+				Selection.Metrics.DeferredByBudget + Selection.Metrics.DeferredByCapacity);
+		if (Selection.Metrics.OversizedEntityCount > 0)
+		{
+			if (!Runtime.bReportedOversizedEntity)
+			{
+				const FFlecsNetworkEntityKey& Oversized = Selection.Metrics.FirstOversizedEntity;
+				UE_LOG(LogTemp, Warning, TEXT("Flecs entity %u generation %u exceeds the per-peer selection byte budget."),
+					Oversized.EntityId, static_cast<uint32>(Oversized.Generation));
+				Runtime.bReportedOversizedEntity = true;
+			}
+		}
+		else
+			Runtime.bReportedOversizedEntity = false;
 		if (Selection.Records.IsEmpty())
 		{
 			continue;
@@ -1288,8 +1234,8 @@ void UFlecsNetworkSessionSubsystem::ProcessServerReplication()
 			{
 				continue;
 			}
-			const FFlecsSpatialEntity* Metadata = Snapshot.Entities.FindByPredicate(
-				[&Scheduled](const FFlecsSpatialEntity& Entity) { return Entity.Key == Scheduled.Key; });
+			const int32* MetadataIndex = SpatialIndicesByEntity.Find(Scheduled.Key);
+			const FFlecsSpatialEntity* Metadata = MetadataIndex ? &Snapshot.Entities[*MetadataIndex] : nullptr;
 			const FString* DefinitionStableId = Metadata ? DefinitionStableIdsByEntity.Find(Scheduled.Key) : nullptr;
 			if (!Metadata || !DefinitionStableId)
 			{
@@ -1389,6 +1335,25 @@ void UFlecsNetworkSessionSubsystem::GetPeerSessions(TArray<FFlecsPeerSessionView
 		View.Channel = Session.Channel;
 		View.RejectionReason = Session.RejectionReason;
 	}
+}
+
+uint64 UFlecsNetworkSessionSubsystem::GetTrackedSpatialContainerBytes() const
+{
+	check(IsInGameThread());
+	if (!WorkerBridgeState.IsValid())
+		return 0;
+	uint64 Bytes = WorkerBridgeState->TransferArrayBytes.load(std::memory_order_acquire)
+		+ WorkerBridgeState->SpatialMailbox.GetTrackedArrayBytes()
+		+ WorkerBridgeState->SpatialAssembler.GetTrackedArrayBytes();
+	if (const auto& Completed = WorkerBridgeState->CompletedSpatialSnapshot; Completed.IsValid())
+	{
+		Bytes += Completed->Snapshot.LiveEntityKeys.GetAllocatedSize();
+		Bytes += Completed->Snapshot.Entities.GetAllocatedSize();
+		Bytes += Completed->DefinitionStableIds.GetAllocatedSize();
+		Bytes += Completed->Indices.GetAllocatedSize();
+		Bytes += Completed->Index.GetTrackedContainerBytes();
+	}
+	return Bytes;
 }
 
 FlecsModRegistry::FRegistry* UFlecsNetworkSessionSubsystem::GetModRegistryForSetup()
@@ -1534,10 +1499,11 @@ bool UFlecsNetworkSessionSubsystem::QueuePeerEntitySpawn(
 	const uint64 LocalEpoch = Session->LocalAttachmentEpoch;
 	const uint64 ServerEpoch = Session->ServerWorldEpoch;
 	const uint64 Connection = Incarnation.Value;
+	const int32 PeerEntityLimit = SessionLimits.MaxOwnedEntitiesPerPeer;
 	const TSharedRef<FFlecsGenericWorkerBridgeState, ESPMode::ThreadSafe> BridgeRef = WorkerBridgeState.ToSharedRef();
 	const EFlecsWorkerCommandResult QueueResult =
 		FlecsSubsystem->SubmitWorkerCommand(LocalEpoch, [BridgeRef, Request = MoveTemp(Request), LocalEpoch,
-															ServerEpoch, Connection, RequestId](flecs::world&) mutable {
+															ServerEpoch, Connection, RequestId, PeerEntityLimit](flecs::world&) mutable {
 			FFlecsGenericWorkerBridgeState::FSpawnResult Result;
 			Result.LocalAttachmentEpoch = LocalEpoch;
 			Result.ServerWorldEpoch = ServerEpoch;
@@ -1553,7 +1519,7 @@ bool UFlecsNetworkSessionSubsystem::QueuePeerEntitySpawn(
 			{
 				TArray<FlecsSimulation::FNetworkEntityIdentity>* Owned =
 					BridgeRef->OwnedEntitiesByConnection.Find(Connection);
-				if (Owned && Owned->Num() >= MaxPeerOwnedEntities)
+				if (Owned && Owned->Num() >= PeerEntityLimit)
 				{
 					Result.Result = FlecsSimulation::EModelResult::LimitReached;
 				}
@@ -1644,9 +1610,16 @@ bool UFlecsNetworkSessionSubsystem::FreezeModRegistry(uint32 ProtocolVersion, FS
 		return false;
 	}
 	FlecsModRegistry::FManifestDescriptor Descriptor;
+	TArray<uint8> ManifestBytes;
 	if (!ModRegistry.ExportManifestDescriptor(Descriptor, OutError)
-		|| !Descriptor.Serialize(LocalManifestDescriptorBytes, OutError))
+		|| !Descriptor.Serialize(ManifestBytes, OutError))
 	{
+		return false;
+	}
+	if (!FFlecsSessionManifestEnvelope::Encode(
+		static_cast<uint32>(SessionLimits.MaxEntities), ManifestBytes, LocalManifestDescriptorBytes))
+	{
+		OutError = TEXT("The session capacity or manifest envelope exceeds its transport limit.");
 		return false;
 	}
 	if (!InstallWorkerIntegration(OutError))
@@ -1673,11 +1646,12 @@ bool UFlecsNetworkSessionSubsystem::InstallWorkerIntegration(FString& OutError)
 	const TMap<FString, FFlecsTrustedPermissionRule> PermissionRules = TrustedPermissionRules;
 	const TMap<FString, FFlecsTrustedSpatialDefinition> SpatialDefinitions = TrustedSpatialDefinitions;
 	const bool bAuthoritative = GetWorld() && FlecsHasAuthoritativeSimulation(GetWorld()->GetNetMode());
+	const int32 AuthoritativeEntityLimit = SessionLimits.MaxEntities;
 	const uint64 CapturedServerWorldEpoch = bAuthoritative ? ServerWorldEpoch : 0;
 	const uint64 ExpectedLocalEpoch = FlecsSubsystem->GetActiveEpoch();
 
 	FFlecsWorkerStartupCallback Startup = [BridgeRef, RegistryRef, PermissionRules, SpatialDefinitions, bAuthoritative,
-											  CapturedServerWorldEpoch](flecs::world& World, uint64 LocalEpoch) {
+											  CapturedServerWorldEpoch, AuthoritativeEntityLimit](flecs::world& World, uint64 LocalEpoch) {
 		check(!IsInGameThread());
 		if (BridgeRef->bLifecycleRetired.load(std::memory_order_acquire))
 		{
@@ -1692,11 +1666,18 @@ bool UFlecsNetworkSessionSubsystem::InstallWorkerIntegration(FString& OutError)
 		BridgeRef->LocalAttachmentEpoch = LocalEpoch;
 		BridgeRef->ServerWorldEpoch = CapturedServerWorldEpoch;
 		BridgeRef->SimulationTick = 0;
+		BridgeRef->Heartbeat.Reset();
 		BridgeRef->LastClientSnapshotRevision = 0;
 		BridgeRef->ClientModelIncarnation = 0;
 		BridgeRef->bSpatialDiagnosticsReported = false;
+		BridgeRef->TransferIdentities.Empty();
+		BridgeRef->TransferMetadata.Empty();
+		BridgeRef->TransferArrayBytes.store(0, std::memory_order_release);
+		BridgeRef->bTransferActive = false;
+		BridgeRef->SpatialMailbox.Reset();
 		BridgeRef->bAuthoritativeModelFailed.store(false, std::memory_order_release);
-		BridgeRef->Model = MakeUnique<FlecsSimulation::FWorkerEntityModel>(*RegistryRef, bAuthoritative);
+		BridgeRef->Model = MakeUnique<FlecsSimulation::FWorkerEntityModel>(
+			*RegistryRef, bAuthoritative, AuthoritativeEntityLimit);
 		if (!bAuthoritative || CapturedServerWorldEpoch == 0)
 		{
 			return;
@@ -1760,6 +1741,10 @@ bool UFlecsNetworkSessionSubsystem::InstallWorkerIntegration(FString& OutError)
 		}
 		BridgeRef->Model.Reset();
 		BridgeRef->OwnedEntitiesByConnection.Empty();
+		BridgeRef->TransferIdentities.Empty();
+		BridgeRef->TransferMetadata.Empty();
+		BridgeRef->TransferArrayBytes.store(0, std::memory_order_release);
+		BridgeRef->bTransferActive = false;
 		BridgeRef->bModelInitialized = false;
 		BridgeRef->LocalAttachmentEpoch = 0;
 		BridgeRef->ServerWorldEpoch = 0;
@@ -1769,7 +1754,9 @@ bool UFlecsNetworkSessionSubsystem::InstallWorkerIntegration(FString& OutError)
 		BridgeRef->bSpatialDiagnosticsReported = false;
 		{
 			FScopeLock Lock(&BridgeRef->ResultMutex);
+			BridgeRef->Heartbeat.Reset();
 			BridgeRef->CompletedDeltas.Empty();
+			BridgeRef->SpatialMailbox.Reset();
 			BridgeRef->ClientApplyResults.Empty();
 			BridgeRef->SpawnResults.Empty();
 			BridgeRef->SharedSpawnResults.Empty();
@@ -1795,7 +1782,7 @@ bool UFlecsNetworkSessionSubsystem::InstallWorkerIntegration(FString& OutError)
 
 	if (bAuthoritative)
 	{
-		FFlecsWorkerDataPublisher Publisher = [BridgeRef](flecs::world&, FFlecsSimulationDataBuilder& Builder) {
+		FFlecsWorkerDataPublisher Publisher = [BridgeRef](flecs::world&, FFlecsSimulationDataBuilder&) {
 			if (BridgeRef->bLifecycleRetired.load(std::memory_order_acquire)
 				|| BridgeRef->bAuthoritativeModelFailed.load(std::memory_order_acquire) || !BridgeRef->Model
 				|| !BridgeRef->bModelInitialized)
@@ -1811,6 +1798,12 @@ bool UFlecsNetworkSessionSubsystem::InstallWorkerIntegration(FString& OutError)
 			if (BridgeRef->Model->RefreshAuthoritativeComponentChanges(BridgeRef->SimulationTick)
 				!= FlecsSimulation::EModelResult::Accepted)
 			{
+				BridgeRef->bAuthoritativeModelFailed.store(true, std::memory_order_release);
+				return;
+			}
+			if (!BridgeRef->Heartbeat.Publish(BridgeRef->LocalAttachmentEpoch, BridgeRef->SimulationTick))
+			{
+				UE_LOG(LogTemp, Error, TEXT("Flecs worker heartbeat became invalid or regressed."));
 				BridgeRef->bAuthoritativeModelFailed.store(true, std::memory_order_release);
 				return;
 			}
@@ -1862,80 +1855,71 @@ bool UFlecsNetworkSessionSubsystem::InstallWorkerIntegration(FString& OutError)
 				BridgeRef->RetirementBarrierQueued.Remove(RetiredIncarnation);
 				BridgeRef->RetirementBarrierPassed.Remove(RetiredIncarnation);
 			}
-			TArray<FlecsSimulation::FSpatialEntityMetadata> Metadata;
-			TArray<FlecsSimulation::FSpatialMetadataDiagnostic> Diagnostics;
-			const FlecsSimulation::EModelResult SpatialResult =
-				BridgeRef->Model->BuildSpatialMetadata(BridgeRef->SimulationTick, Metadata, Diagnostics);
-			if (SpatialResult != FlecsSimulation::EModelResult::Accepted
-				&& SpatialResult != FlecsSimulation::EModelResult::Partial)
-			{
-				BridgeRef->bAuthoritativeModelFailed.store(true, std::memory_order_release);
+			// The game thread acknowledges each chunk by clearing the single shared slot.
+			if (BridgeRef->SpatialMailbox.IsPending())
 				return;
-			}
-			TArray<FlecsSimulation::FNetworkEntityIdentity> LiveIdentities;
-			if (BridgeRef->Model->BuildLiveEntityIdentities(LiveIdentities) != FlecsSimulation::EModelResult::Accepted)
+			if (!BridgeRef->bTransferActive)
 			{
-				BridgeRef->bAuthoritativeModelFailed.store(true, std::memory_order_release);
-				return;
-			}
-			TArray<uint8> LiveIdentityPayload;
-			if (!EncodeLiveIdentities(
-					BridgeRef->ServerWorldEpoch, BridgeRef->SimulationTick, LiveIdentities, LiveIdentityPayload))
-			{
-				UE_LOG(LogTemp, Error, TEXT("Flecs worker could not encode the bounded live identity publication."));
-				BridgeRef->bAuthoritativeModelFailed.store(true, std::memory_order_release);
-				return;
-			}
-			if (Builder.TryAdd(LiveIdentityTypeId, TArrayView<const uint8>(LiveIdentityPayload))
-				!= EFlecsDataPublicationAddResult::Accepted)
-			{
-				UE_LOG(LogTemp, Error, TEXT("Flecs worker publication has no capacity for the live identity set."));
-				BridgeRef->bAuthoritativeModelFailed.store(true, std::memory_order_release);
-				return;
-			}
-			if (SpatialResult == FlecsSimulation::EModelResult::Partial && !BridgeRef->bSpatialDiagnosticsReported)
-			{
-				BridgeRef->bSpatialDiagnosticsReported = true;
-				const FString Detail =
-					Diagnostics.IsEmpty()
-						? TEXT("no diagnostic detail")
-						: FString::Printf(TEXT("definition %s, entity %u, code %u"),
-							  *Diagnostics[0].Identity.DefinitionStableId, Diagnostics[0].Identity.NetworkEntityId,
-							  static_cast<uint32>(Diagnostics[0].Code));
-				UE_LOG(LogTemp, Warning, TEXT("Flecs spatial publication reported bounded metadata diagnostics: %s"),
-					*Detail);
-			}
-			for (const FlecsSimulation::FSpatialEntityMetadata& Entity : Metadata)
-			{
-				TArray<uint8> Payload;
-				if (!EncodeSpatialMetadata(Entity, Payload))
+				TArray<FlecsSimulation::FSpatialMetadataDiagnostic> Diagnostics;
+				const FlecsSimulation::EModelResult SpatialResult = BridgeRef->Model->BuildSpatialMetadata(
+					BridgeRef->SimulationTick, BridgeRef->TransferMetadata, Diagnostics);
+				if ((SpatialResult != FlecsSimulation::EModelResult::Accepted && SpatialResult != FlecsSimulation::EModelResult::Partial)
+					|| BridgeRef->Model->BuildLiveEntityIdentities(BridgeRef->TransferIdentities) != FlecsSimulation::EModelResult::Accepted)
 				{
-					if (!BridgeRef->bSpatialDiagnosticsReported)
-					{
-						BridgeRef->bSpatialDiagnosticsReported = true;
-						UE_LOG(LogTemp, Warning,
-							TEXT(
-								"Flecs spatial metadata for entity %u could not be encoded; its live identity is retained."),
-							Entity.Identity.NetworkEntityId);
-					}
-					continue;
-				}
-				if (Builder.TryAdd(SpatialMetadataTypeId, TArrayView<const uint8>(Payload))
-					!= EFlecsDataPublicationAddResult::Accepted)
-				{
-					UE_LOG(LogTemp, Error, TEXT("Flecs worker publication has no capacity for spatial metadata."));
+					UE_LOG(LogTemp, Error, TEXT("Flecs could not capture a spatial publication."));
 					BridgeRef->bAuthoritativeModelFailed.store(true, std::memory_order_release);
 					return;
 				}
+				BridgeRef->TransferArrayBytes.store(
+					static_cast<uint64>(BridgeRef->TransferIdentities.GetAllocatedSize())
+						+ static_cast<uint64>(BridgeRef->TransferMetadata.GetAllocatedSize()), std::memory_order_release);
+				if (SpatialResult == FlecsSimulation::EModelResult::Partial && !BridgeRef->bSpatialDiagnosticsReported)
+				{
+					BridgeRef->bSpatialDiagnosticsReported = true;
+					UE_LOG(LogTemp, Warning, TEXT("Flecs spatial publication omitted invalid spatial metadata."));
+				}
+				if (BridgeRef->TransferGeneration == MAX_uint64)
+				{
+					BridgeRef->bAuthoritativeModelFailed.store(true, std::memory_order_release);
+					return;
+				}
+				++BridgeRef->TransferGeneration;
+				BridgeRef->TransferTick = BridgeRef->SimulationTick;
+				BridgeRef->TransferChunkIndex = 0;
+				BridgeRef->TransferIdentityOffset = 0;
+				BridgeRef->TransferMetadataOffset = 0;
+				BridgeRef->bTransferActive = true;
 			}
-			TArray<uint8> CompletionPayload;
-			AppendU32(CompletionPayload, BridgeRef->SimulationTick);
-			if (Builder.TryAdd(SpatialPublicationCompleteTypeId, TArrayView<const uint8>(CompletionPayload))
-				!= EFlecsDataPublicationAddResult::Accepted)
+			FlecsSpatialTransfer::FChunk Chunk;
+			Chunk.LocalEpoch = BridgeRef->LocalAttachmentEpoch;
+			Chunk.ServerEpoch = BridgeRef->ServerWorldEpoch;
+			Chunk.Generation = BridgeRef->TransferGeneration;
+			Chunk.SimulationTick = BridgeRef->TransferTick;
+			Chunk.Index = BridgeRef->TransferChunkIndex++;
+			Chunk.TotalIdentities = BridgeRef->TransferIdentities.Num();
+			Chunk.TotalMetadata = BridgeRef->TransferMetadata.Num();
+			const int32 IdentityEnd = FMath::Min(Chunk.TotalIdentities, BridgeRef->TransferIdentityOffset + FlecsSpatialTransfer::MaxChunkItems);
+			const int32 MetadataEnd = FMath::Min(Chunk.TotalMetadata, BridgeRef->TransferMetadataOffset + FlecsSpatialTransfer::MaxChunkItems);
+			Chunk.Identities.Reserve(IdentityEnd - BridgeRef->TransferIdentityOffset);
+			Chunk.Metadata.Reserve(MetadataEnd - BridgeRef->TransferMetadataOffset);
+			while (BridgeRef->TransferIdentityOffset < IdentityEnd)
+				Chunk.Identities.Add(MoveTemp(BridgeRef->TransferIdentities[BridgeRef->TransferIdentityOffset++]));
+			while (BridgeRef->TransferMetadataOffset < MetadataEnd)
+				Chunk.Metadata.Add(MoveTemp(BridgeRef->TransferMetadata[BridgeRef->TransferMetadataOffset++]));
+			Chunk.bComplete = IdentityEnd == Chunk.TotalIdentities && MetadataEnd == Chunk.TotalMetadata;
+			if (Chunk.bComplete)
 			{
-				UE_LOG(LogTemp, Error, TEXT("Flecs worker publication has no capacity for its completion marker."));
+				BridgeRef->TransferIdentities.Empty();
+				BridgeRef->TransferMetadata.Empty();
+				BridgeRef->TransferArrayBytes.store(0, std::memory_order_release);
+				BridgeRef->bTransferActive = false;
+			}
+			if (!BridgeRef->SpatialMailbox.TryPublish(MoveTemp(Chunk)))
+			{
+				UE_LOG(LogTemp, Error, TEXT("Flecs spatial publication mailbox lost its single-producer invariant."));
 				BridgeRef->bAuthoritativeModelFailed.store(true, std::memory_order_release);
 			}
+
 		};
 		const EFlecsWorkerCommandResult PublisherResult = FlecsSubsystem->RegisterPersistentDataPublisher(
 			ExpectedLocalEpoch, FName(TEXT("FLECSNetwork.Spatial")), MoveTemp(Publisher));
@@ -1965,10 +1949,11 @@ bool UFlecsNetworkSessionSubsystem::InitializeClientModel(FPeerSession& Session)
 	const uint64 ExpectedLocalEpoch = Session.LocalAttachmentEpoch;
 	const uint64 ServerEpoch = Session.ServerWorldEpoch;
 	const uint64 ConnectionIncarnation = Session.Incarnation.Value;
+	const int32 EntityCapacity = SessionLimits.MaxEntities;
 	const TSharedRef<FFlecsGenericWorkerBridgeState, ESPMode::ThreadSafe> BridgeRef = WorkerBridgeState.ToSharedRef();
 	const TSharedRef<FlecsModRegistry::FRegistry, ESPMode::ThreadSafe> RegistryRef = FrozenWorkerRegistry.ToSharedRef();
 	const EFlecsWorkerCommandResult QueueResult = FlecsSubsystem->SubmitWorkerCommand(ExpectedLocalEpoch,
-		[BridgeRef, RegistryRef, ExpectedLocalEpoch, ServerEpoch, ConnectionIncarnation](flecs::world& WorkerWorld) {
+		[BridgeRef, RegistryRef, ExpectedLocalEpoch, ServerEpoch, ConnectionIncarnation, EntityCapacity](flecs::world& WorkerWorld) {
 			if (BridgeRef->Model && BridgeRef->bModelInitialized)
 			{
 				if (BridgeRef->LocalAttachmentEpoch == ExpectedLocalEpoch && BridgeRef->ServerWorldEpoch == ServerEpoch
@@ -1979,7 +1964,7 @@ bool UFlecsNetworkSessionSubsystem::InitializeClientModel(FPeerSession& Session)
 				}
 				BridgeRef->Model->Shutdown();
 			}
-			BridgeRef->Model = MakeUnique<FlecsSimulation::FWorkerEntityModel>(*RegistryRef, false);
+			BridgeRef->Model = MakeUnique<FlecsSimulation::FWorkerEntityModel>(*RegistryRef, false, EntityCapacity);
 			const FlecsSimulation::EModelResult Result = BridgeRef->Model->Initialize(
 				WorkerWorld, ServerEpoch, FlecsSimulation::FWorkerEntityModel::FPermissionCheck());
 			BridgeRef->bModelInitialized = Result == FlecsSimulation::EModelResult::Accepted;
@@ -2581,7 +2566,14 @@ void UFlecsNetworkSessionSubsystem::HandleManifestDescriptor(
 	}
 	FlecsModRegistry::FManifestDescriptor RemoteDescriptor;
 	FString Error;
-	if (!FlecsModRegistry::FManifestDescriptor::Deserialize(Bytes, RemoteDescriptor, Error))
+	TArray<uint8> ManifestBytes;
+	if (!FFlecsSessionManifestEnvelope::DecodeMatching(
+			Bytes, static_cast<uint32>(SessionLimits.MaxEntities), ManifestBytes, Error))
+	{
+		RejectPeerManifest(Session->Incarnation, Error);
+		return;
+	}
+	if (!FlecsModRegistry::FManifestDescriptor::Deserialize(ManifestBytes, RemoteDescriptor, Error))
 	{
 		RejectPeerManifest(Session->Incarnation, Error);
 		return;
@@ -2731,6 +2723,8 @@ bool UFlecsNetworkSessionSubsystem::RejectPeerManifest(FConnectionIncarnation In
 	{
 		Session->State = EFlecsPeerSessionState::Rejected;
 		EmitPeerEvent(*Session, EFlecsSessionEventKind::Rejected, 0, 0, 0, 0, Reason.Left(512));
+		if (bIsClosing)
+			return true;
 		if (GetWorld() && GetWorld()->GetNetMode() == NM_Client)
 		{
 			QueueClientModelReset(Incarnation, Session->LocalAttachmentEpoch);
@@ -2768,6 +2762,8 @@ void UFlecsNetworkSessionSubsystem::ReconcileConnections()
 		&& WorkerBridgeState.IsValid())
 	{
 		bRetirementFailClosed = false;
+		WorkerBridgeState->SpatialAssembler.Reset();
+		WorkerBridgeState->CompletedSpatialSnapshot.Reset();
 		FScopeLock Lock(&WorkerBridgeState->ResultMutex);
 		WorkerBridgeState->bRetirementFailClosed = false;
 	}
@@ -3067,6 +3063,8 @@ void UFlecsNetworkSessionSubsystem::HandleWorldAboutToDetach(UWorld& World)
 		if (WorkerBridgeState.IsValid())
 		{
 			WorkerBridgeState->bLifecycleRetired.store(true, std::memory_order_release);
+			WorkerBridgeState->SpatialAssembler.Reset();
+			WorkerBridgeState->CompletedSpatialSnapshot.Reset();
 		}
 		CloseAllSessions(World.GetNetMode() != NM_Client);
 	}

@@ -262,4 +262,131 @@ bool FFlecsPartialSpatialIdentityTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlecsRelevanceCapacityTest, "Flecs.Network.Relevance.PerPeerCapacity",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlecsRelevanceCapacityTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FFlecsSpatialSnapshot Snapshot;
+	Snapshot.WorldEpoch = 1;
+	Snapshot.SimulationTick = 1;
+	Snapshot.Entities = {Entity(1, 0), Entity(2, 0)};
+	Snapshot.Entities[0].Importance = 100;
+	FFlecsSpatialIndex Index;
+	if (!TestTrue(TEXT("Build index"), Index.Build(Snapshot, 100)))
+		return false;
+	FFlecsPerConnectionScheduler Scheduler;
+	FFlecsConnectionInterest Client = Interest(1, 0);
+	FFlecsRelevanceBudget Budget;
+	FFlecsRelevanceSelection Selection;
+	TestTrue(TEXT("Select with one entity slot"), Scheduler.Select(Index, Client, 1.0, Budget, Selection, 1));
+	TestTrue(TEXT("Higher priority entity enters"), Has(Selection, 1, EFlecsRelevanceTransition::Enter));
+	TestEqual(TEXT("Second entity deferred by capacity"), Selection.Metrics.DeferredByCapacity, 1u);
+	TestTrue(TEXT("Acknowledge initial admission"), Accept(Scheduler, Selection, 1.0));
+	Client.VisibilityOverrides.Add(Snapshot.Entities[0].Key, false);
+	TestTrue(TEXT("Select exit"), Scheduler.Select(Index, Client, 2.0, Budget, Selection, 1));
+	TestTrue(TEXT("Previously admitted entity exits"), Has(Selection, 1, EFlecsRelevanceTransition::Exit));
+	TestFalse(TEXT("Exit does not release capacity before acknowledgement"),
+		Has(Selection, 2, EFlecsRelevanceTransition::Enter));
+	TestTrue(TEXT("Acknowledge exit"), Accept(Scheduler, Selection, 2.0));
+	TestTrue(TEXT("Select after exit"), Scheduler.Select(Index, Client, 3.0, Budget, Selection, 1));
+	TestTrue(TEXT("Deferred entity enters after acknowledgement"), Has(Selection, 2, EFlecsRelevanceTransition::Enter));
+	FFlecsPerConnectionScheduler BlockedScheduler;
+	TMap<FFlecsNetworkEntityKey, double> Blocked;
+	Blocked.Add(Snapshot.Entities[0].Key, 2.0);
+	FFlecsConnectionInterest UnfilteredClient = Interest(1, 0);
+	TestTrue(TEXT("Select while one entity is temporarily capacity-blocked"),
+		BlockedScheduler.Select(Index, UnfilteredClient, 1.0, Budget, Selection, 1, &Blocked));
+	TestFalse(TEXT("Blocked entity is deferred"), Has(Selection, 1, EFlecsRelevanceTransition::Enter));
+	TestTrue(TEXT("Another entity can use the slot"), Has(Selection, 2, EFlecsRelevanceTransition::Enter));
+	TestTrue(TEXT("Reject in-flight selection before retry"),
+		BlockedScheduler.CompleteSelection(Selection.SelectionId, false, 1.0));
+	TestTrue(TEXT("Select after the retry deadline"),
+		BlockedScheduler.Select(Index, UnfilteredClient, 3.0, Budget, Selection, 1, &Blocked));
+	TestTrue(TEXT("Previously blocked entity can be retried"), Has(Selection, 1, EFlecsRelevanceTransition::Enter));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlecsLargeWorldRelevanceTest, "Flecs.Network.Relevance.LargeWorldCapacity",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlecsLargeWorldRelevanceTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FFlecsSpatialSnapshot Snapshot;
+	Snapshot.WorldEpoch = 1;
+	Snapshot.SimulationTick = 1;
+	Snapshot.Entities.Reserve(FFlecsSpatialIndex::MaxEntities);
+	Snapshot.LiveEntityKeys.Reserve(FFlecsSpatialIndex::MaxEntities);
+	for (int32 Id = 1; Id <= FFlecsSpatialIndex::MaxEntities; ++Id)
+	{
+		FFlecsSpatialEntity Value = Entity(static_cast<uint32>(Id), 0);
+		if (Id <= 2)
+			Value.Importance = 100;
+		Snapshot.LiveEntityKeys.Add(Value.Key);
+		Snapshot.Entities.Add(MoveTemp(Value));
+	}
+	Snapshot.bHasCompleteLiveEntitySet = true;
+	FFlecsSpatialIndex Index;
+	if (!TestTrue(TEXT("Build a 100,000-entity spatial index"), Index.Build(Snapshot, 100)))
+		return false;
+	FFlecsPerConnectionScheduler Scheduler;
+	FFlecsRelevanceSelection Selection;
+	FFlecsRelevanceBudget Budget;
+	Budget.MaxRecords = 2;
+	TestTrue(TEXT("Select from the large world"), Scheduler.Select(Index, Interest(1, 0), 1.0, Budget, Selection, 2));
+	TestEqual(TEXT("Per-peer cap admits two entities"), Selection.Records.Num(), 2);
+	TestTrue(TEXT("First high-priority entity admitted"), Has(Selection, 1, EFlecsRelevanceTransition::Enter));
+	TestTrue(TEXT("Second high-priority entity admitted"), Has(Selection, 2, EFlecsRelevanceTransition::Enter));
+	TestEqual(TEXT("Other entities deferred by capacity"), Selection.Metrics.DeferredByCapacity, 99998u);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlecsRelevanceHistoryLimitTest, "Flecs.Network.Relevance.HistoryExhaustion",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlecsRelevanceHistoryLimitTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FFlecsSpatialSnapshot Snapshot;
+	Snapshot.WorldEpoch = 1;
+	Snapshot.SimulationTick = 1;
+	Snapshot.Entities = {Entity(1, 0), Entity(2, 0)};
+	FFlecsSpatialIndex Index;
+	FFlecsPerConnectionScheduler Scheduler(2);
+	FFlecsRelevanceBudget Budget;
+	FFlecsRelevanceSelection Selection;
+	const FFlecsConnectionInterest Client = Interest(1, 0);
+	TestTrue(TEXT("Initial index builds"), Index.Build(Snapshot, 100));
+	FFlecsPerConnectionScheduler TooSmall(1);
+	AddExpectedError(TEXT("Flecs relevance identity history limit reached"), EAutomationExpectedErrorFlags::Contains, 1);
+	TestFalse(TEXT("An oversized first snapshot is rejected before history changes"),
+		TooSmall.Select(Index, Client, 1.0, Budget, Selection));
+	TestTrue(TEXT("First-snapshot history exhaustion is reported"), Selection.Metrics.bIdentityHistoryExhausted);
+	TestTrue(TEXT("Initial history fits"), Scheduler.Select(Index, Client, 1.0, Budget, Selection));
+	TestTrue(TEXT("Acknowledge initial selection"), Accept(Scheduler, Selection, 1.0));
+	Snapshot.Entities[1] = Entity(3, 0);
+	++Snapshot.SimulationTick;
+	TestTrue(TEXT("Over-history-limit index still builds"), Index.Build(Snapshot, 100));
+	AddExpectedError(TEXT("Flecs relevance identity history limit reached"), EAutomationExpectedErrorFlags::Contains, 1);
+	TestFalse(TEXT("A new identity beyond history capacity is rejected"),
+		Scheduler.Select(Index, Client, 2.0, Budget, Selection));
+	TestTrue(TEXT("History exhaustion is reported to the session"), Selection.Metrics.bIdentityHistoryExhausted);
+	Snapshot.Entities[1] = Entity(2, 0);
+	++Snapshot.SimulationTick;
+	TestTrue(TEXT("Known identities still build"), Index.Build(Snapshot, 100));
+	TestTrue(TEXT("Rejected snapshot did not corrupt previous history"),
+		Scheduler.Select(Index, Client, 3.0, Budget, Selection));
+	TestTrue(TEXT("Complete any known-identity selection"), Accept(Scheduler, Selection, 3.0));
+	Snapshot.WorldEpoch = 2;
+	Snapshot.Entities = {Entity(3, 0), Entity(4, 0)};
+	for (FFlecsSpatialEntity& Item : Snapshot.Entities)
+		Item.Key.WorldEpoch = 2;
+	++Snapshot.SimulationTick;
+	TestTrue(TEXT("New epoch index builds"), Index.Build(Snapshot, 100));
+	TestTrue(TEXT("New epoch starts fresh bounded history"), Scheduler.Select(Index, Client, 4.0, Budget, Selection));
+	return true;
+}
+
 #endif

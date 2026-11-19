@@ -23,6 +23,34 @@ Use `FWorkerEntityModel` authoritative operations for network identity, spawn, c
 
 A spatial definition can require a worker-safe position accessor, be always relevant without a position, or be skipped without one. By default the scheduler uses the player controller's focal location. **Project Settings → Plugins → FLECS → Networking** configures up to four increasing distance/rate tiers; these control replication eligibility, not simulation Hz. A custom per-peer interest provider, component rate cap, visibility, hysteresis, and budget can change the actual outcome.
 
+## Capacity and per-peer budgets
+
+Set these values in **Project Settings → Plugins → FLECS → Networking → Limits** before the network session starts:
+
+| Setting | Default | Range and scope |
+| --- | ---: | --- |
+| `MaxNetworkEntities` | 5,000 | 1–100,000 network-managed entities in the authoritative world. |
+| `MaxPeerOwnedEntities` | 256 | 1–100,000 entities owned by one peer; capped by the world limit. |
+| `MaxRelevantEntitiesPerPeer` | 5,000 | 1–100,000 relevant entities retained for one peer; capped by the world limit. |
+| `MaxRecordsPerPeerSelection` | 128 | 1–16,384 selected entity records per peer selection. |
+| `MaxPayloadKiBPerPeerSelection` | 64 KiB | 1–4,096 KiB per peer selection. |
+
+The session captures these values at initialization. Invalid values are clamped and logged. The server and clients must have matching `MaxNetworkEntities` values: the versioned session manifest envelope rejects a mismatch and rejects older unversioned envelopes. Local, non-networked Flecs entities are outside the world network limit.
+
+Spawn requests beyond the world or peer ownership cap return `LimitReached` through their completion event. The relevance scheduler prioritizes eligible entities and defers new entries when a peer's capacity is full. A departing entity retains its slot until its exit or despawn is acknowledged. Work that exceeds the current selection budget is deferred; a single update larger than the entire byte budget cannot fit until its size or budget changes.
+
+The game-thread `FFlecsPeerInterestProvider` receives the configured record and byte budgets as defaults and can override them for a peer within the transport limits. The byte budget is a logical selection budget, not wire bandwidth; Iris framing, retransmission, and packet overhead are separate.
+
+Retained per-peer baselines have separate bounds of 1,000,000 components and 64 MiB of payload bytes. Container and metadata overhead are additional. Capacity pressure can defer a delta and retry a smaller selection; identity history is also bounded and exhaustion rejects the affected session. A 100,000-entity **world** does not guarantee that every entity can be replicated to one peer or that a particular update rate is achievable.
+
+## Chunked spatial snapshots
+
+The worker captures a coherent set of live identities and spatial metadata, then hands it to the game thread in bounded chunks through an acknowledged single-slot handoff. A slow consumer applies backpressure instead of silently skipping chunks. The assembler checks the epoch, generation, sequence, counts, and identity consistency before a completed snapshot is used for relevance.
+
+Incomplete or invalid generations do not replace the last complete snapshot. Pending network acknowledgements can continue while another snapshot is assembled, and an independently copied server tick heartbeat can advance during the transfer. If an entity disappears after capture, a stale selection is retried against a newer snapshot rather than treated as a successful update.
+
+Larger capacities increase snapshot and retained-state memory and can increase snapshot latency. Measure and tune the limits for the target game and hardware.
+
 ## Codecs and quantization
 
 `Quantization/FlecsQuantization.h` provides signed fixed-step and 16-bit circular-angle quantization plus network-order integer readers/writers. Helpers reject invalid values and report failure; callers own payload format, bounds, versioning, and canonical decoding. The host movement example uses signed centimeter values for location and a 16-bit yaw. Health uses its own codec; stamina and speed are local to the server example.
@@ -35,3 +63,5 @@ A spatial definition can require a worker-safe position accessor, be always rele
 - Core worker timing and opt-in world-memory sampling are described in [FLECS](../FLECS/README.md#diagnostics).
 
 The example debug actor's distance color and displayed rate are local configured-tier estimates. They are not proof of the server's selected tier or actual delivery rate, especially with custom interest providers or differing client settings.
+
+`stat FlecsNetwork` and the plugin overlay report spatial snapshot container allocations separately from channel buffers. This is a partial figure: it excludes strings, transient workspaces, allocator overhead, Flecs world memory, and other process memory. It is sampled for each local world approximately once per second.

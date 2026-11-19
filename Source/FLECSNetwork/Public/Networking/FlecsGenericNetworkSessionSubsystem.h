@@ -4,6 +4,7 @@
 #include "Subsystems/WorldSubsystem.h"
 #include "ModRegistry/ModSchemaRegistry.h"
 #include "Networking/FlecsNetworkSessionTypes.h"
+#include "Networking/FlecsNetworkLimits.h"
 #include "FlecsGenericNetworkSessionSubsystem.generated.h"
 
 class APlayerController;
@@ -52,6 +53,8 @@ public:
 	bool IsModRegistryFrozen() const { return bModRegistryFrozen; }
 	bool IsPeerCompatible(FConnectionIncarnation Incarnation, uint64& OutServerWorldEpoch) const;
 	bool GetPeerSessionMapping(FConnectionIncarnation Incarnation, FlecsModRegistry::FSessionMapping& OutMapping) const;
+	/** Game-thread snapshot-container allocations, excluding strings and transient workspace. */
+	uint64 GetTrackedSpatialContainerBytes() const;
 	AFlecsReplicationChannel* GetCompatibleChannel(FConnectionIncarnation Incarnation) const;
 
 	bool RejectPeerManifest(FConnectionIncarnation Incarnation, const FString& Reason);
@@ -136,6 +139,7 @@ private:
 	uint64 LocalAttachmentEpoch = 0;
 	uint64 ServerWorldEpoch = 0;
 	uint32 SessionProtocolVersion = 0;
+	FFlecsNetworkLimits SessionLimits;
 	uint64 NextSpawnRequestId = 0;
 	TSet<uint64> PendingSharedSpawns;
 	FlecsModRegistry::FRegistry ModRegistry;

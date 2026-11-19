@@ -9,6 +9,8 @@ struct FLECSNETWORK_API FFlecsRelevanceMetrics
 	uint32 SelectedRecords = 0;
 	uint32 SelectedBytes = 0;
 	uint32 DeferredByBudget = 0;
+	uint32 DeferredByCapacity = 0;
+	bool bIdentityHistoryExhausted = false;
 	uint32 OversizedEntityCount = 0;
 	FFlecsNetworkEntityKey FirstOversizedEntity;
 	uint32 StaleSnapshotRecords = 0;

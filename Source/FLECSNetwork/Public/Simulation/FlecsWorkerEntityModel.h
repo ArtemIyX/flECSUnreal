@@ -15,6 +15,7 @@
 #include "Data/Enums/FlecsSpatialMetadataDiagnosticCode.h"
 #include "Data/Enums/FlecsModelResult.h"
 #include "ModRegistry/ModSchemaRegistry.h"
+#include "Networking/FlecsNetworkLimits.h"
 
 namespace flecs
 {
@@ -23,14 +24,16 @@ struct world;
 
 namespace FlecsSimulation
 {
-constexpr int32 MaxEntities = 5000;
-constexpr int32 MaxIdentityHistory = 100000;
+constexpr int32 MaxEntities = FlecsNetworkLimits::MaxEntityCapacity;
+constexpr int32 DefaultMaxEntities = 5000;
+constexpr int32 MaxIdentityHistory = FlecsNetworkLimits::MaxIdentityHistory;
 constexpr int32 MaxComponentsPerEntity = 256;
 constexpr int32 MaxRecordsPerBatch = 16384;
 constexpr uint32 MaxBatchBytes = 4 * 1024 * 1024;
 constexpr int32 MaxSpatialMetadataDiagnostics = 128;
 constexpr int32 MaxPeerReplicationStates = 64;
-constexpr int32 MaxPeerKnownComponents = MaxRecordsPerBatch;
+constexpr int32 MaxPeerKnownComponents = 1000000;
+constexpr uint64 MaxPeerBaselinePayloadBytes = 64ull * 1024 * 1024;
 constexpr int32 MaxCommandsPerConnectionPerWindow = 60;
 constexpr uint32 CommandWindowTicks = 60;
 constexpr uint32 MaxFutureCommandTicks = 30;
@@ -53,7 +56,8 @@ public:
 		 */
 	using FPositionAccessor = TFunction<bool(uint64 EntityToken, FVector3d& OutPosition)>;
 
-	FWorkerEntityModel(FlecsModRegistry::FRegistry& InRegistry, bool bInAuthoritative);
+	FWorkerEntityModel(FlecsModRegistry::FRegistry& InRegistry, bool bInAuthoritative,
+		int32 InMaxEntities = DefaultMaxEntities);
 	~FWorkerEntityModel();
 
 	EModelResult Initialize(
@@ -209,6 +213,7 @@ private:
 	bool IsComponentAllowed(const FString& DefinitionStableId, const FString& ComponentStableId) const;
 
 	FlecsModRegistry::FRegistry& Registry;
+	const int32 EntityLimit;
 	bool bAuthoritative = false;
 	bool bInitialized = false;
 	bool bClientSessionUsable = true;

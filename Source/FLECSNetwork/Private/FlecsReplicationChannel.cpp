@@ -1,5 +1,6 @@
 #include "FlecsReplicationChannel.h"
 #include "Diagnostics/FlecsNetworkDiagnosticsSubsystem.h"
+#include "Simulation/FlecsWorkerEntityModel.h"
 
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
@@ -254,7 +255,8 @@ void AFlecsReplicationChannel::RejectManifestHandshake(uint64 ServerWorldEpoch, 
 	}
 	else
 	{
-		ServerRejectManifest(ServerWorldEpoch, 1);
+		const uint8 ReasonCode = BoundedReason.StartsWith(TEXT("Flecs network entity capacity mismatch:")) ? 2 : 1;
+		ServerRejectManifest(ServerWorldEpoch, ReasonCode);
 	}
 }
 
@@ -564,10 +566,11 @@ void AFlecsReplicationChannel::ServerRejectManifest_Implementation(uint64 Server
 	check(IsInGameThread());
 	const APlayerController* OwningController = Cast<APlayerController>(GetOwner());
 	if (HasAuthority() && OwningController && OwningController->GetNetConnection()
-		&& ServerWorldEpoch == HandshakeServerWorldEpoch && ReasonCode == 1)
+		&& ServerWorldEpoch == HandshakeServerWorldEpoch && (ReasonCode == 1 || ReasonCode == 2))
 	{
-		RejectManifestHandshake(
-			ServerWorldEpoch, TEXT("Client rejected the server manifest or received malformed data."));
+		RejectManifestHandshake(ServerWorldEpoch, ReasonCode == 2
+			? TEXT("Client rejected the session because its Flecs network entity capacity differs from the server.")
+			: TEXT("Client rejected the server manifest or received malformed data."));
 	}
 }
 
@@ -741,6 +744,16 @@ bool AFlecsReplicationChannel::PublishUpdateBatch(
 		}
 		UniqueKeys.Add(Key);
 	}
+
+	int32 NewHistoryEntries = 0;
+	const int32 ExistingHistoryEntries = CurrentWorldEpoch == InWorldEpoch ? HighestPublishedGenerations.Num() : 0;
+	for (const TPair<uint32, uint16>& Entry : CandidateHighWatermarks)
+	{
+		if (CurrentWorldEpoch != InWorldEpoch || !HighestPublishedGenerations.Contains(Entry.Key))
+			++NewHistoryEntries;
+	}
+	if (NewHistoryEntries > FlecsSimulation::MaxIdentityHistory - ExistingHistoryEntries)
+		return RejectBatch(TEXT("Update batch exceeds the channel's bounded identity history."));
 
 	if (CurrentWorldEpoch != InWorldEpoch)
 	{
