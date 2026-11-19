@@ -2,8 +2,11 @@
 
 #include "FLECS.h"
 #include "FLECS/Public/FLECS.h"
-#include "flecs.h"
 
+// Flecs is statically linked once into this module. Public consumers see the
+// Unreal FLECS_API import macro, so this curated list must export every Flecs
+// symbol used across the current plugin/project boundary. It is not a blanket
+// export of every bundled Flecs API for arbitrary third-party native use.
 #pragma comment(linker, "/export:ECS_PAIR")
 #pragma comment(linker, "/export:ECS_AUTO_OVERRIDE")
 #pragma comment(linker, "/export:ECS_TOGGLE")
@@ -16,6 +19,15 @@
 #pragma comment(linker, "/export:FLECS_IDEcsDefaultChildComponentID_")
 #pragma comment(linker, "/export:FLECS_IDEcsTickSourceID_")
 #pragma comment(linker, "/export:ecs_os_init")
+#pragma comment(linker, "/export:ecs_init")
+#pragma comment(linker, "/export:ecs_set_scope")
+#pragma comment(linker, "/export:flecs_component_ids_set")
+#pragma comment(linker, "/export:ecs_log_push_")
+#pragma comment(linker, "/export:ecs_log_pop_")
+#pragma comment(linker, "/export:ecs_opaque_init")
+#pragma comment(linker, "/export:ecs_cpp_get_constant_name")
+#pragma comment(linker, "/export:ecs_cpp_enum_init")
+#pragma comment(linker, "/export:ecs_cpp_enum_constant_register")
 #pragma comment(linker, "/export:flecs_poly_claim_")
 #pragma comment(linker, "/export:flecs_poly_release_")
 #pragma comment(linker, "/export:ecs_fini")

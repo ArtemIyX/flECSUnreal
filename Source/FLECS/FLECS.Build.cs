@@ -1,6 +1,5 @@
 ﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
-using System.IO;
 using UnrealBuildTool;
 
 public class FLECS : ModuleRules
@@ -9,17 +8,7 @@ public class FLECS : ModuleRules
 	{
 		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
 
-		string thirdPartyPath = Path.Combine(ModuleDirectory, "..", "ThirdParty", "flecs");
-		string flecsIncludePath = Path.Combine(thirdPartyPath, "include");
-		string flecsLibPath = Path.Combine(thirdPartyPath, "Lib", "Win64", "flecs_static.lib");
-		
-		PublicIncludePaths.AddRange(
-			new string[] {
-				flecsIncludePath
-			}
-			);
-				
-		
+
 		PrivateIncludePaths.AddRange(
 			new string[] {
 				// ... add other private include paths required here ...
@@ -38,13 +27,14 @@ public class FLECS : ModuleRules
 		if (Target.Platform == UnrealTargetPlatform.Win64)
 		{
 			PublicDefinitions.Add("FLECS_NDEBUG");
-			PublicAdditionalLibraries.Add(flecsLibPath);
 		}
 			
 		
 		PrivateDependencyModuleNames.AddRange(
 			new string[]
 			{
+				// Link Flecs into this module only; consumers import its curated exports.
+				"FLECSThirdParty",
 				"CoreUObject",
 				"Engine",
 				"DeveloperSettings",
