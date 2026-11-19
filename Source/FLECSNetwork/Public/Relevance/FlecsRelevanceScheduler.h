@@ -1,125 +1,17 @@
 #pragma once
 
 #include "CoreMinimal.h"
-
-/**
- * Network identity copied into immutable worker publications; never a local Flecs ID.
- * An entity ID is unique within one epoch; after despawn, reuse it only with a
- * strictly greater generation. Generation zero is reserved as invalid.
- */
-struct FLECSNETWORK_API FFlecsNetworkEntityKey
-{
-	uint64 WorldEpoch = 0;
-	uint32 EntityId = 0;
-	uint16 Generation = 0;
-
-	bool IsValid() const { return WorldEpoch != 0 && EntityId != 0 && Generation != 0; }
-	friend bool operator==(const FFlecsNetworkEntityKey& A, const FFlecsNetworkEntityKey& B)
-	{
-		return A.WorldEpoch == B.WorldEpoch && A.EntityId == B.EntityId && A.Generation == B.Generation;
-	}
-	friend uint32 GetTypeHash(const FFlecsNetworkEntityKey& Key)
-	{
-		return HashCombine(HashCombine(GetTypeHash(Key.WorldEpoch), GetTypeHash(Key.EntityId)), GetTypeHash(Key.Generation));
-	}
-};
-
-enum class EFlecsNetworkVisibility : uint8
-{
-	RelevantToAll,
-	OwnerOnly
-};
-
-/** Complete spatial/revision metadata copied at one simulation publication boundary. */
-struct FLECSNETWORK_API FFlecsSpatialEntity
-{
-	FFlecsNetworkEntityKey Key;
-	FVector3f Position = FVector3f::ZeroVector;
-	uint64 Revision = 0;
-	uint64 OwnerConnectionId = 0;
-	uint32 EstimatedUpdateBytes = 0;
-	/** Optional schema-derived cap for the entity cadence; zero uses its distance tier unchanged. */
-	float RecommendedUpdateRateHz = 0.0f;
-	int32 Importance = 0;
-	EFlecsNetworkVisibility Visibility = EFlecsNetworkVisibility::RelevantToAll;
-	bool bAlwaysRelevant = false;
-};
-
-/**
- * One immutable, bounded simulation publication used by spatial selection.
- * The caller keeps this object alive and unchanged while its spatial index is used.
- */
-struct FLECSNETWORK_API FFlecsSpatialSnapshot
-{
-	uint64 WorldEpoch = 0;
-	uint64 SimulationTick = 0;
-	TArray<FFlecsSpatialEntity> Entities;
-	/** Complete worker-owned identity list, independent of partial spatial metadata. */
-	TArray<FFlecsNetworkEntityKey> LiveEntityKeys;
-	/** When true, only LiveEntityKeys may establish entity absence or generation retirement. */
-	bool bHasCompleteLiveEntitySet = false;
-};
-
-struct FLECSNETWORK_API FFlecsRelevanceTier
-{
-	float MaxDistance = 0.0f;
-	float UpdateRateHz = 0.0f;
-};
-
-struct FLECSNETWORK_API FFlecsConnectionInterest
-{
-	uint64 ConnectionId = 0;
-	FVector3f ViewPosition = FVector3f::ZeroVector;
-	/** Per-connection explicit show/hide overrides; absent keys use distance/visibility policy. */
-	TMap<FFlecsNetworkEntityKey, bool> VisibilityOverrides;
-	TArray<FFlecsRelevanceTier> Tiers;
-	float HysteresisDistance = 250.0f;
-};
-
-struct FLECSNETWORK_API FFlecsRelevanceBudget
-{
-	uint32 MaxRecords = 128;
-	uint32 MaxBytes = 64 * 1024;
-};
-
-enum class EFlecsRelevanceTransition : uint8
-{
-	Enter,
-	Update,
-	Exit
-};
-
-struct FLECSNETWORK_API FFlecsScheduledEntity
-{
-	FFlecsNetworkEntityKey Key;
-	EFlecsRelevanceTransition Transition = EFlecsRelevanceTransition::Update;
-	uint64 Revision = 0;
-	uint64 SimulationTick = 0;
-	uint32 EstimatedBytes = 0;
-	uint64 OwnerConnectionId = 0;
-	uint8 Tier = 0;
-	bool bEntityDespawned = false;
-};
-
-struct FLECSNETWORK_API FFlecsRelevanceMetrics
-{
-	uint32 CandidateCount = 0;
-	uint32 SelectedRecords = 0;
-	uint32 SelectedBytes = 0;
-	uint32 DeferredByBudget = 0;
-	uint32 OversizedEntityCount = 0;
-	FFlecsNetworkEntityKey FirstOversizedEntity;
-	uint32 StaleSnapshotRecords = 0;
-	uint32 CurrentlyRelevant = 0;
-	uint64 OldestDeferredAgeMs = 0;
-};
-
-struct FLECSNETWORK_API FFlecsRelevanceSelection
-{
-	uint64 SelectionId = 0;
-	TArray<FFlecsScheduledEntity> Records;
-	FFlecsRelevanceMetrics Metrics;
-};
+#include "Data/Structs/FlecsNetworkEntityKey.h"
+#include "Data/Structs/FlecsSpatialEntity.h"
+#include "Data/Structs/FlecsSpatialSnapshot.h"
+#include "Data/Structs/FlecsRelevanceTier.h"
+#include "Data/Structs/FlecsConnectionInterest.h"
+#include "Data/Structs/FlecsRelevanceBudget.h"
+#include "Data/Structs/FlecsScheduledEntity.h"
+#include "Data/Structs/FlecsRelevanceMetrics.h"
+#include "Data/Structs/FlecsRelevanceSelection.h"
+#include "Data/Enums/FlecsNetworkVisibility.h"
+#include "Data/Enums/FlecsRelevanceTransition.h"
 
 /** Bounded uniform-grid index over copied publication data. Rebuild once per snapshot. */
 class FLECSNETWORK_API FFlecsSpatialIndex

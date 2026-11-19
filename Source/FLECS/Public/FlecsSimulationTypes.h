@@ -1,6 +1,14 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Data/Structs/FlecsSimulationPublication.h"
+#include "Data/Structs/FlecsSimulationDataItem.h"
+#include "Data/Structs/FlecsSimulationDataPublication.h"
+#include "Data/Structs/FlecsNamedWorkerDataPublisher.h"
+#include "Data/Structs/FlecsNamedWorkerLifecycle.h"
+#include "Data/Enums/FlecsDataPublicationAddResult.h"
+#include "Data/Enums/FlecsWorkerCommandResult.h"
+#include "FlecsSimulationCallbacks.h"
 #include "../../ThirdParty/flecs/Include/flecs.h"
 
 #include <functional>
@@ -11,59 +19,6 @@ inline constexpr uint32 FlecsMaxDataPublicationItems = 16384;
 inline constexpr uint32 FlecsMaxDataPublicationBytes = 4 * 1024 * 1024;
 inline constexpr uint32 FlecsMaxDataPublicationItemBytes = 64 * 1024;
 inline constexpr uint32 FlecsMaxDataPublishers = 128;
-
-/** Immutable worker status copied for consumers; contains no Flecs references. */
-struct FFlecsSimulationPublication
-{
-	/** Local Unreal world attachment epoch. It is not a server network epoch. */
-	uint64 Epoch = 0;
-	uint64 Tick = 0;
-	uint64 Steps = 0;
-	uint64 MissedDeadlines = 0;
-	uint64 RejectedCommands = 0;
-	uint64 CommandsAppliedLastStep = 0;
-	uint64 PublishedDataItems = 0;
-	uint64 PublishedDataBytes = 0;
-	uint64 RejectedDataItems = 0;
-	double LastStepSeconds = 0.0;
-	double MaxStepSeconds = 0.0;
-	double LastDeadlineLatenessSeconds = 0.0;
-	int32 QueueDepth = 0;
-	double OldestCommandAgeSeconds = 0.0;
-};
-
-using FFlecsWorkerCommand = std::function<void(flecs::world&)>;
-
-struct FFlecsSimulationDataItem
-{
-	/** Nonzero application-defined schema/type identifier. */
-	uint32 TypeId = 0;
-	/** Owned copy of the encoded application DTO. */
-	TArray<uint8> Payload;
-};
-
-/** Immutable snapshot data contains copied application bytes only. Epoch identifies
- * the local Unreal world attachment; it is not a server or network-session epoch. */
-struct FFlecsSimulationDataPublication
-{
-	uint64 LocalAttachmentEpoch = 0;
-	uint64 SimulationTick = 0;
-	/** Monotonic platform seconds sampled after extraction completes. */
-	double TimestampSeconds = 0.0;
-	uint32 TotalBytes = 0;
-	uint32 RejectedItems = 0;
-	TArray<FFlecsSimulationDataItem> Items;
-};
-
-enum class EFlecsDataPublicationAddResult : uint8
-{
-	Accepted,
-	InvalidType,
-	InvalidPayload,
-	ItemTooLarge,
-	ItemLimitReached,
-	ByteLimitReached
-};
 
 /** Worker-only bounded writer. TryAdd copies bytes, so the resulting publication
  * never aliases Flecs storage or caller-owned buffers. */
@@ -119,35 +74,3 @@ private:
 	uint32 RejectedItems = 0;
 };
 
-/** Registered before worker startup; invoked on the simulation thread after each
- * fixed step. Must not access UObjects or store Flecs references in the DTO. */
-using FFlecsWorkerDataPublisher = std::function<void(flecs::world&, FFlecsSimulationDataBuilder&)>;
-
-/** Paired worker lifecycle callbacks. Both execute on the Flecs owner thread and
- * receive only that session's world and local Unreal attachment epoch. They must
- * not capture or access UObjects, actors, or Unreal connection state. */
-using FFlecsWorkerStartupCallback = std::function<void(flecs::world&, uint64 LocalAttachmentEpoch)>;
-using FFlecsWorkerShutdownCallback = std::function<void(flecs::world&, uint64 LocalAttachmentEpoch)>;
-
-struct FFlecsNamedWorkerDataPublisher
-{
-	FName Name;
-	FFlecsWorkerDataPublisher Callback;
-};
-
-struct FFlecsNamedWorkerLifecycle
-{
-	FName Name;
-	FFlecsWorkerStartupCallback Startup;
-	FFlecsWorkerShutdownCallback Shutdown;
-};
-
-enum class EFlecsWorkerCommandResult : uint8
-{
-	Accepted,
-	InvalidCommand,
-	StaleEpoch,
-	QueueFull,
-	Stopping,
-	RegistryFull
-};

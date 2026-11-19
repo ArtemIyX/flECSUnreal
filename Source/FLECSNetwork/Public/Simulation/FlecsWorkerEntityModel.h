@@ -1,6 +1,19 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Data/Structs/FlecsNetworkEntityIdentity.h"
+#include "Data/Structs/FlecsStateRecord.h"
+#include "Data/Structs/FlecsStateBatch.h"
+#include "Data/Structs/FlecsPeerReplicationContext.h"
+#include "Data/Structs/FlecsSelectedEntityComponents.h"
+#include "Data/Structs/FlecsSpatialEntityMetadata.h"
+#include "Data/Structs/FlecsSpatialMetadataDiagnostic.h"
+#include "Data/Structs/FlecsInitialComponent.h"
+#include "Data/Structs/FlecsClientCommand.h"
+#include "Data/Enums/FlecsStateOperation.h"
+#include "Data/Enums/FlecsSpatialDefinitionPolicy.h"
+#include "Data/Enums/FlecsSpatialMetadataDiagnosticCode.h"
+#include "Data/Enums/FlecsModelResult.h"
 #include "ModRegistry/ModSchemaRegistry.h"
 
 namespace flecs
@@ -22,147 +35,6 @@ namespace FlecsSimulation
 	constexpr uint32 CommandWindowTicks = 60;
 	constexpr uint32 MaxFutureCommandTicks = 30;
 	constexpr uint32 MaxPastCommandTicks = 120;
-
-	/** Server-assigned network identity; it never contains a local Flecs entity ID. */
-	struct FNetworkEntityIdentity
-	{
-		uint64 ServerWorldEpoch = 0;
-		uint32 NetworkEntityId = 0;
-		uint16 Generation = 0;
-		FString DefinitionStableId;
-
-		bool IsValid() const
-		{
-			return ServerWorldEpoch != 0 && NetworkEntityId != 0 && Generation != 0 && !DefinitionStableId.IsEmpty();
-		}
-	};
-
-	enum class EStateOperation : uint8
-	{
-		EntityCreate,
-		ComponentUpsert,
-		ComponentRemove,
-		EntityDespawn,
-		EntityLeaveRelevance
-	};
-
-	/** Owned DTO record. Component payloads are versioned by the peer's session mapping. */
-	struct FStateRecord
-	{
-		FNetworkEntityIdentity Identity;
-		uint16 DefinitionWireId = 0;
-		uint16 ComponentWireId = 0;
-		uint32 SourceSimulationTick = 0;
-		EStateOperation Operation = EStateOperation::EntityCreate;
-		TArray<uint8> Payload;
-	};
-
-	struct FStateBatch
-	{
-		uint64 ServerWorldEpoch = 0;
-		uint32 SimulationTick = 0;
-		/** Worker-issued token used to commit or discard one per-peer delta baseline. */
-		uint64 PublicationRevision = 0;
-		bool bCompleteStateSnapshot = false;
-		TArray<FStateRecord> Records;
-	};
-
-	/**
-	 * Trusted per-peer selection supplied by the network bridge after scheduling.
-	 * Entity keys are packed from network ID and generation with MakeEntityViewKey.
-	 * The context is value-only and must be built for one live connection incarnation.
-	 */
-	struct FPeerReplicationContext
-	{
-		uint64 ConnectionToken = 0;
-		TSet<uint64> RelevantEntityKeys;
-
-		static uint64 MakeEntityViewKey(uint32 NetworkEntityId, uint16 Generation)
-		{
-			return (static_cast<uint64>(NetworkEntityId) << 16) | Generation;
-		}
-
-		bool Includes(const FNetworkEntityIdentity& Identity) const
-		{
-			return Identity.IsValid() && RelevantEntityKeys.Contains(
-				MakeEntityViewKey(Identity.NetworkEntityId, Identity.Generation));
-		}
-	};
-
-	/** Scheduler-selected entity update; empty component list means all visible components are due when the flag is true. */
-	struct FSelectedEntityComponents
-	{
-		FNetworkEntityIdentity Identity;
-		TArray<FString> DueComponentStableIds;
-		bool bAllVisibleComponentsDue = true;
-	};
-
-	/** Copied scheduler input; contains no component payloads or Flecs handles. */
-	struct FSpatialEntityMetadata
-	{
-		FNetworkEntityIdentity Identity;
-		FVector3d Position = FVector3d::ZeroVector;
-		/** Monotonic worker-owned entity state revision, independent of the global fixed-step tick. */
-		uint64 Revision = 0;
-		uint64 OwnerConnectionToken = 0;
-		int32 Importance = 0;
-		uint32 EstimatedUpdateBytes = 0;
-		float RecommendedUpdateRateHz = 0.0f;
-		bool bAlwaysRelevant = false;
-	};
-
-	enum class ESpatialDefinitionPolicy : uint8
-	{
-		PositionRequired,
-		AlwaysRelevantWithoutPosition,
-		SkipWithoutPosition
-	};
-
-	enum class ESpatialMetadataDiagnosticCode : uint8
-	{
-		MissingDefinitionPolicy,
-		NonSpatialSkipped,
-		PositionAccessorFailed,
-		InvalidPosition,
-		UnknownComponentSchema,
-		EstimatedUpdateExceedsTransferCap,
-		DiagnosticsTruncated
-	};
-
-	struct FSpatialMetadataDiagnostic
-	{
-		FNetworkEntityIdentity Identity;
-		ESpatialMetadataDiagnosticCode Code = ESpatialMetadataDiagnosticCode::MissingDefinitionPolicy;
-		/** Nonzero only for the final bounded truncation summary entry. */
-		uint32 OmittedDiagnosticCount = 0;
-	};
-
-	struct FInitialComponent
-	{
-		FString StableComponentId;
-		TArray<uint8> Payload;
-	};
-
-	struct FClientCommand
-	{
-		uint64 ServerWorldEpoch = 0;
-		uint64 TrustedConnectionToken = 0; // assigned from the owning server endpoint, never copied from client bytes
-		uint32 Sequence = 0;
-		uint32 TargetNetworkEntityId = 0;
-		uint16 TargetGeneration = 0;
-		uint32 RequestedSimulationTick = 0;
-		uint16 CommandWireId = 0;
-		bool bDiscrete = true;
-		TArray<uint8> Payload;
-	};
-
-	enum class EModelResult : uint8
-	{
-		Accepted, Partial, Invalid, WrongRole, WrongEpoch, StaleIdentity, StaleTick,
-		UnknownSchema, Unauthorized, RateLimited, Replay, LimitReached, CallbackFailed,
-		/** A callback left mutation state uncertain; the bridge must discard/reset this session. */
-		SessionInvalidated
-	};
 
 	/**
 	 * Mutable ECS identity/state model. Construct, initialize, and call every method

@@ -4,135 +4,16 @@
 #include "GameFramework/Actor.h"
 #include "Iris/ReplicationState/IrisFastArraySerializer.h"
 #include "FlecsBoundedPayload.h"
+#include "Data/Structs/FlecsManifestChunk.h"
+#include "Data/Structs/FlecsCommandEnvelope.h"
+#include "Data/Structs/FlecsServerTickHeartbeat.h"
+#include "Data/Structs/FlecsReplicationRecord.h"
+#include "Data/Structs/FlecsReplicationRecordArray.h"
+#include "Data/Structs/FlecsManifestAssembly.h"
 #include "FlecsReplicationChannel.generated.h"
 
 class AFlecsReplicationChannel;
 class APlayerController;
-
-/** Bounded chunk used only by the pre-session manifest handshake. */
-USTRUCT()
-struct FLECSNETWORK_API FFlecsManifestChunk
-{
-	GENERATED_BODY()
-
-	UPROPERTY()
-	uint64 WorldEpoch = 0;
-	UPROPERTY()
-	uint32 TransferId = 0;
-	UPROPERTY()
-	uint16 ChunkIndex = 0;
-	UPROPERTY()
-	uint16 ChunkCount = 0;
-	UPROPERTY()
-	uint32 TotalBytes = 0;
-	UPROPERTY()
-	FFlecsBoundedPayload Payload;
-};
-
-USTRUCT()
-struct FLECSNETWORK_API FFlecsCommandEnvelope
-{
-	GENERATED_BODY()
-
-	UPROPERTY()
-	uint64 WorldEpoch = 0;
-	UPROPERTY()
-	uint32 Sequence = 0;
-	UPROPERTY()
-	uint32 TargetNetworkEntityId = 0;
-	UPROPERTY()
-	uint16 TargetEntityGeneration = 0;
-	UPROPERTY()
-	uint32 RequestedSimulationTick = 0;
-	UPROPERTY()
-	uint16 CommandWireId = 0;
-	UPROPERTY()
-	FFlecsBoundedPayload Payload;
-};
-
-USTRUCT()
-struct FLECSNETWORK_API FFlecsServerTickHeartbeat
-{
-	GENERATED_BODY()
-
-	UPROPERTY()
-	uint64 ServerWorldEpoch = 0;
-
-	UPROPERTY()
-	uint32 SimulationTick = 0;
-};
-
-/** A bounded, versioned state record. Identity values are assigned by the server, never by local Flecs IDs. */
-USTRUCT()
-struct FLECSNETWORK_API FFlecsReplicationRecord : public FFastArraySerializerItem
-{
-	GENERATED_BODY()
-
-	UPROPERTY()
-	uint64 WorldEpoch = 0;
-
-	UPROPERTY()
-	uint32 NetworkEntityId = 0;
-
-	UPROPERTY()
-	uint16 EntityGeneration = 0;
-
-	UPROPERTY()
-	uint16 DefinitionWireId = 0;
-
-	UPROPERTY()
-	uint16 ComponentWireId = 0;
-
-	UPROPERTY()
-	uint32 SourceSimulationTick = 0;
-
-	/** 0 = upsert, 1 = component removal, 2 = true despawn, 3 = entity create, 4 = leave relevance. */
-	UPROPERTY()
-	uint8 Operation = 0;
-
-	UPROPERTY()
-	uint64 SnapshotRevision = 0;
-
-	UPROPERTY()
-	uint32 SnapshotTransferId = 0;
-
-	UPROPERTY()
-	uint16 SnapshotRecordIndex = 0;
-
-	UPROPERTY()
-	uint16 SnapshotRecordCount = 0;
-
-	UPROPERTY()
-	uint32 SnapshotSimulationTick = 0;
-
-	UPROPERTY()
-	FFlecsBoundedPayload Payload;
-};
-
-USTRUCT()
-struct FLECSNETWORK_API FFlecsReplicationRecordArray : public FIrisFastArraySerializer
-{
-	GENERATED_BODY()
-
-	UPROPERTY()
-	TArray<FFlecsReplicationRecord> Items;
-
-	/** Set by the owning actor; replication callbacks remain on Unreal's game thread. */
-	AFlecsReplicationChannel* Owner = nullptr;
-
-	bool NetDeltaSerialize(FNetDeltaSerializeInfo& DeltaParms)
-	{
-		return FFastArraySerializer::FastArrayDeltaSerialize<FFlecsReplicationRecord, FFlecsReplicationRecordArray>(Items, DeltaParms, *this);
-	}
-
-	void PostReplicatedReceive(const FFastArraySerializer::FPostReplicatedReceiveParameters& Parameters);
-};
-
-template<>
-struct TStructOpsTypeTraits<FFlecsReplicationRecordArray> : TStructOpsTypeTraitsBase2<FFlecsReplicationRecordArray>
-{
-	enum { WithNetDeltaSerializer = true };
-};
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FFlecsReplicationSnapshotReceived, const TArray<FFlecsReplicationRecord>&);
 DECLARE_MULTICAST_DELEGATE_FourParams(FFlecsCompleteStateBatchReceived, uint64, uint64, uint32, const TArray<FFlecsReplicationRecord>&);
@@ -160,17 +41,6 @@ namespace FlecsNetworkCommandResult
 }
 
 using FFlecsDiscreteCommandAdmission = TFunction<bool(const FFlecsCommandEnvelope&)>;
-
-struct FFlecsManifestAssembly
-{
-	uint64 WorldEpoch = 0;
-	uint32 TransferId = 0;
-	uint32 TotalBytes = 0;
-	uint16 ChunkCount = 0;
-	uint32 ReceivedBytes = 0;
-	TArray<TArray<uint8>> Chunks;
-	TBitArray<> ReceivedChunks;
-};
 
 /** Per-connection owner-only Iris host. All methods, callbacks, and delegates are game-thread-only. */
 UCLASS(NotBlueprintable, NotPlaceable)
