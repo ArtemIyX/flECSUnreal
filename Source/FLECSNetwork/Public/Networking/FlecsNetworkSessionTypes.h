@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Simulation/FlecsWorkerEntityModel.h"
 
 class APlayerController;
 class AFlecsReplicationChannel;
@@ -9,6 +10,17 @@ class AFlecsReplicationChannel;
 using FFlecsTrustedPermissionRule = TFunction<bool(uint64 ConnectionToken, uint64 OwnerConnectionToken,
 	uint32 NetworkEntityId, uint16 Generation)>;
 using FFlecsTrustedPositionAccessor = TFunction<bool(uint64 EntityToken, FVector3d& OutPosition)>;
+
+/** A game-provided initial entity; the session supplies the peer's trusted owner token. */
+struct FFlecsPeerSpawnRequest
+{
+	FString DefinitionStableId;
+	TArray<FlecsSimulation::FInitialComponent> InitialComponents;
+};
+
+/** Game-thread factory. Return false with a reason to reject a peer's spawn request. */
+using FFlecsPeerSpawnFactory = TFunction<bool(const FVector& ViewPosition,
+	FFlecsPeerSpawnRequest& OutRequest, FString& OutError)>;
 
 enum class EFlecsTrustedSpatialPolicy : uint8
 {
