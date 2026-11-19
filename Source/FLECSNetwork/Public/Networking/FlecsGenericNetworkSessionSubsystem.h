@@ -53,6 +53,10 @@ public:
 	AFlecsReplicationChannel* GetCompatibleChannel(FConnectionIncarnation Incarnation) const;
 
 	bool RejectPeerManifest(FConnectionIncarnation Incarnation, const FString& Reason);
+	/** Game-thread notifications; schedule channel recreation with RequestChannelRecreation. */
+	FFlecsSessionEventDelegate OnSessionEvent;
+	/** Request same-world server channel replacement on a later tick. */
+	bool RequestChannelRecreation(FConnectionIncarnation Incarnation);
 
 private:
 	struct FPeerSession
@@ -102,6 +106,10 @@ private:
 	FPeerSession* FindSessionByChannel(AFlecsReplicationChannel* Channel);
 	void CloseSession(const TWeakObjectPtr<APlayerController>& Controller, bool bDestroyChannel);
 	void CloseAllSessions(bool bDestroyChannels);
+	void ProcessRequestedChannelRecreations();
+	void EmitPeerEvent(const FPeerSession& Session, EFlecsSessionEventKind Kind,
+		uint64 Revision = 0, uint32 SimulationTick = 0, uint32 Sequence = 0,
+		uint8 Result = 0, const FString& Reason = FString());
 	void HandleWorldAboutToDetach(UWorld& World);
 	FConnectionIncarnation AllocateIncarnation();
 	FPeerSession* FindSession(FConnectionIncarnation Incarnation);
@@ -128,5 +136,6 @@ private:
 	bool bRetirementFailClosed = false;
 	uint64 PendingClientModelResetIncarnation = 0;
 	uint64 PendingClientModelResetLocalEpoch = 0;
+	TSet<uint64> PendingChannelRecreations;
 	bool bIsClosing = false;
 };

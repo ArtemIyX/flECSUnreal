@@ -78,3 +78,30 @@ struct FFlecsPeerSessionView
 	TWeakObjectPtr<AFlecsReplicationChannel> Channel;
 	FString RejectionReason;
 };
+
+enum class EFlecsSessionEventKind : uint8
+{
+	Compatible,
+	Rejected,
+	ClientStateApplied,
+	ServerTransferAcknowledged,
+	ServerCommandFinished,
+	ClientCommandResult
+};
+
+/** Game-thread notification. UObject references must not be used by the worker. */
+struct FFlecsSessionEvent
+{
+	EFlecsSessionEventKind Kind = EFlecsSessionEventKind::Compatible;
+	FConnectionIncarnation Incarnation;
+	TWeakObjectPtr<APlayerController> Controller;
+	TWeakObjectPtr<AFlecsReplicationChannel> Channel;
+	uint64 ServerWorldEpoch = 0;
+	uint64 SnapshotRevision = 0;
+	uint32 SimulationTick = 0;
+	uint32 CommandSequence = 0;
+	uint8 CommandResult = 0;
+	FString Reason;
+};
+
+DECLARE_MULTICAST_DELEGATE_OneParam(FFlecsSessionEventDelegate, const FFlecsSessionEvent&);

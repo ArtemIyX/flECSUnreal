@@ -290,6 +290,7 @@ struct FFlecsGenericWorkerBridgeState
 		uint64 ServerWorldEpoch = 0;
 		uint64 ConnectionIncarnation = 0;
 		uint64 SnapshotRevision = 0;
+		uint32 SimulationTick = 0;
 		FlecsSimulation::EModelResult Result = FlecsSimulation::EModelResult::Invalid;
 	};
 	struct FSpawnResult
@@ -456,6 +457,7 @@ void UFlecsNetworkSessionSubsystem::Tick(float DeltaTime)
 		return;
 	}
 	ReconcileConnections();
+	ProcessRequestedChannelRecreations();
 	QueueRetirementBarriers();
 	RetryPendingClientModelReset();
 	ProcessServerCommandResults();
@@ -660,6 +662,8 @@ void UFlecsNetworkSessionSubsystem::ProcessServerCommandResults()
 				RejectPeerManifest(Session.Incarnation, TEXT("The channel rejected a worker command completion result."));
 				break;
 			}
+			EmitPeerEvent(Session, EFlecsSessionEventKind::ServerCommandFinished, 0, 0,
+				Result.Sequence, ToCommandExecutionResult(Result.Result));
 		}
 	}
 }
@@ -1736,6 +1740,7 @@ void UFlecsNetworkSessionSubsystem::HandleSnapshotTransferFinished(
 	Runtime.bTransferSucceeded = true;
 	Runtime.bModelAckPending = true;
 	TryQueueDeltaAcknowledgement(*Session);
+	EmitPeerEvent(*Session, EFlecsSessionEventKind::ServerTransferAcknowledged, TransferRevision);
 }
 
 void UFlecsNetworkSessionSubsystem::TryQueueDeltaAcknowledgement(FPeerSession& Session)
@@ -1807,6 +1812,16 @@ void UFlecsNetworkSessionSubsystem::BindPeerChannel(FPeerSession& Session)
 			if (AFlecsReplicationChannel* ActiveChannel = WeakChannel.Get())
 			{
 				Subsystem->QueueContinuousCommand(ActiveChannel, Envelope);
+			}
+		}
+	});
+	Channel->OnDiscreteCommandResultReceived.AddLambda([WeakThis, WeakChannel](uint32 Sequence, uint8 ResultCode)
+	{
+		if (UFlecsNetworkSessionSubsystem* Subsystem = WeakThis.Get())
+		{
+			if (FPeerSession* Peer = Subsystem->FindSessionByChannel(WeakChannel.Get()))
+			{
+				Subsystem->EmitPeerEvent(*Peer, EFlecsSessionEventKind::ClientCommandResult, 0, 0, Sequence, ResultCode);
 			}
 		}
 	});
@@ -1906,6 +1921,7 @@ void UFlecsNetworkSessionSubsystem::HandleCompleteClientStateBatch(
 		ApplyResult.ServerWorldEpoch = ServerEpoch;
 		ApplyResult.ConnectionIncarnation = Incarnation;
 		ApplyResult.SnapshotRevision = SnapshotRevision;
+		ApplyResult.SimulationTick = SimulationTick;
 		if (BridgeRef->LocalAttachmentEpoch == LocalEpoch && BridgeRef->ServerWorldEpoch == ServerEpoch &&
 			BridgeRef->ClientModelIncarnation == Incarnation &&
 			BridgeRef->Model && BridgeRef->bModelInitialized && SnapshotRevision > BridgeRef->LastClientSnapshotRevision)
@@ -1989,6 +2005,8 @@ void UFlecsNetworkSessionSubsystem::ProcessClientReplication()
 			RejectPeerManifest(Session.Incarnation, TEXT("Could not acknowledge the successfully applied client batch."));
 			continue;
 		}
+		EmitPeerEvent(Session, EFlecsSessionEventKind::ClientStateApplied,
+			ApplyResult.SnapshotRevision, ApplyResult.SimulationTick);
 	}
 }
 
@@ -2172,8 +2190,11 @@ void UFlecsNetworkSessionSubsystem::HandleManifestHandshakeFinished(
 	}
 	if (!Reason.IsEmpty())
 	{
-		if (Session->State != EFlecsPeerSessionState::Rejected)
+		const bool bNewRejection = Session->State != EFlecsPeerSessionState::Rejected;
+		if (bNewRejection)
 		{
+			Session->State = EFlecsPeerSessionState::Rejected;
+			EmitPeerEvent(*Session, EFlecsSessionEventKind::Rejected, 0, 0, 0, 0, Reason.Left(512));
 			if (GetWorld() && GetWorld()->GetNetMode() == NM_Client)
 			{
 				QueueClientModelReset(Session->Incarnation, Session->LocalAttachmentEpoch);
@@ -2215,6 +2236,7 @@ void UFlecsNetworkSessionSubsystem::HandleManifestHandshakeFinished(
 		return;
 	}
 	Session->bManifestHandshakeCompleted = true;
+	EmitPeerEvent(*Session, EFlecsSessionEventKind::Compatible);
 	if (GetWorld() && GetWorld()->GetNetMode() == NM_Client)
 	{
 		Channel->ResumeReceivedState();
@@ -2259,6 +2281,8 @@ bool UFlecsNetworkSessionSubsystem::RejectPeerManifest(
 	const uint64 RejectedEpoch = Session->ServerWorldEpoch != 0 ? Session->ServerWorldEpoch : ServerWorldEpoch;
 	if (Session->State != EFlecsPeerSessionState::Rejected)
 	{
+		Session->State = EFlecsPeerSessionState::Rejected;
+		EmitPeerEvent(*Session, EFlecsSessionEventKind::Rejected, 0, 0, 0, 0, Reason.Left(512));
 		if (GetWorld() && GetWorld()->GetNetMode() == NM_Client)
 		{
 			QueueClientModelReset(Incarnation, Session->LocalAttachmentEpoch);
@@ -2501,6 +2525,56 @@ void UFlecsNetworkSessionSubsystem::CloseSession(
 		}
 	}
 	PeerSessions.Remove(Controller);
+}
+
+void UFlecsNetworkSessionSubsystem::EmitPeerEvent(const FPeerSession& Session, EFlecsSessionEventKind Kind,
+	uint64 Revision, uint32 SimulationTick, uint32 Sequence, uint8 Result, const FString& Reason)
+{
+	check(IsInGameThread());
+	if (!OnSessionEvent.IsBound()) return;
+	FFlecsSessionEvent Event;
+	Event.Kind = Kind;
+	Event.Incarnation = Session.Incarnation;
+	Event.Controller = Session.Controller;
+	Event.Channel = Session.Channel;
+	Event.ServerWorldEpoch = Session.ServerWorldEpoch;
+	Event.SnapshotRevision = Revision;
+	Event.SimulationTick = SimulationTick;
+	Event.CommandSequence = Sequence;
+	Event.CommandResult = Result;
+	Event.Reason = Reason.Left(512);
+	OnSessionEvent.Broadcast(Event);
+}
+
+bool UFlecsNetworkSessionSubsystem::RequestChannelRecreation(FConnectionIncarnation Incarnation)
+{
+	check(IsInGameThread());
+	const UWorld* World = GetWorld();
+	const FPeerSession* Session = FindSession(Incarnation);
+	if (bIsClosing || !World || World->GetNetMode() == NM_Client || !Session ||
+		Session->State != EFlecsPeerSessionState::Compatible || !Session->Controller.IsValid()) return false;
+	PendingChannelRecreations.Add(Incarnation.Value);
+	return true;
+}
+
+void UFlecsNetworkSessionSubsystem::ProcessRequestedChannelRecreations()
+{
+	check(IsInGameThread());
+	TSet<uint64> Requests = MoveTemp(PendingChannelRecreations);
+	PendingChannelRecreations.Reset();
+	for (uint64 Value : Requests)
+	{
+		FConnectionIncarnation Incarnation;
+		Incarnation.Value = Value;
+		if (FPeerSession* Session = FindSession(Incarnation))
+		{
+			if (Session->State == EFlecsPeerSessionState::Compatible)
+			{
+				const TWeakObjectPtr<APlayerController> Controller = Session->Controller;
+				CloseSession(Controller, true);
+			}
+		}
+	}
 }
 
 void UFlecsNetworkSessionSubsystem::CloseAllSessions(bool bDestroyChannels)
