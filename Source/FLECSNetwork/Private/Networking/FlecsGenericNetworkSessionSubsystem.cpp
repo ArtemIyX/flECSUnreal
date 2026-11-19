@@ -2379,9 +2379,7 @@ void UFlecsNetworkSessionSubsystem::HandleManifestDescriptor(
 	Session->RejectionReason.Reset();
 	if (!Channel->CompleteServerManifestHandshake(InServerWorldEpoch, true, FString()))
 	{
-		Session->State = EFlecsPeerSessionState::Rejected;
-		Session->SessionMapping = FlecsModRegistry::FSessionMapping();
-		Session->RejectionReason = TEXT("Could not complete the server manifest handshake.");
+		RejectPeerManifest(Session->Incarnation, TEXT("Could not complete the server manifest handshake."));
 	}
 }
 
@@ -2418,8 +2416,7 @@ void UFlecsNetworkSessionSubsystem::HandleManifestHandshakeFinished(
 	}
 	if (!Session->SessionMapping.IsValid())
 	{
-		Session->State = EFlecsPeerSessionState::Rejected;
-		Session->RejectionReason = TEXT("Handshake completed without a validated session mapping.");
+		RejectPeerManifest(Session->Incarnation, TEXT("Handshake completed without a validated session mapping."));
 		return;
 	}
 	if (GetWorld() && GetWorld()->GetNetMode() == NM_Client)
@@ -2428,17 +2425,16 @@ void UFlecsNetworkSessionSubsystem::HandleManifestHandshakeFinished(
 	}
 	else if (InServerWorldEpoch != ServerWorldEpoch)
 	{
-		Session->State = EFlecsPeerSessionState::Rejected;
-		Session->RejectionReason = TEXT("Handshake result belongs to a stale server epoch.");
+		RejectPeerManifest(Session->Incarnation, TEXT("Handshake result belongs to a stale server epoch."));
 		return;
 	}
 	Session->State = EFlecsPeerSessionState::Compatible;
 	Session->RejectionReason.Reset();
 	if (GetWorld() && GetWorld()->GetNetMode() == NM_Client && !InitializeClientModel(*Session))
 	{
-		Session->State = EFlecsPeerSessionState::Rejected;
-		Session->SessionMapping = FlecsModRegistry::FSessionMapping();
-		Channel->RejectManifestHandshake(InServerWorldEpoch, Session->RejectionReason);
+		const FString FailureReason = Session->RejectionReason.IsEmpty() ?
+			FString(TEXT("Could not initialize the client simulation model.")) : Session->RejectionReason;
+		RejectPeerManifest(Session->Incarnation, FailureReason);
 		return;
 	}
 	Session->bManifestHandshakeCompleted = true;
