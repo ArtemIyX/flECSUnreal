@@ -1013,6 +1013,8 @@ void UFlecsNetworkSessionSubsystem::ProcessServerReplication()
 			}
 			Runtime.bTransferPending = true;
 			Runtime.TransferRetryCount = 0;
+			EmitPeerEvent(Session, EFlecsSessionEventKind::ServerTransferStarted,
+				Runtime.PendingModelRevision, Runtime.PendingSimulationTick);
 			continue;
 		}
 

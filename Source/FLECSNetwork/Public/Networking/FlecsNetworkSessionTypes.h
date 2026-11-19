@@ -84,6 +84,7 @@ enum class EFlecsSessionEventKind : uint8
 	Compatible,
 	Rejected,
 	ClientStateApplied,
+	ServerTransferStarted,
 	ServerTransferAcknowledged,
 	ServerCommandFinished,
 	ClientCommandResult
