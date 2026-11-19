@@ -87,6 +87,7 @@ private:
 		TSharedPtr<FFlecsGenericPeerSchedulingRuntime, ESPMode::ThreadSafe> Runtime;
 	};
 
+	bool TryConfigureSession();
 	void ReconcileConnections();
 	void ReconcileServerConnections(UWorld& World);
 	void ReconcileClientChannels(UWorld& World);
@@ -147,6 +148,7 @@ private:
 	TSharedPtr<FlecsModRegistry::FRegistry, ESPMode::ThreadSafe> FrozenWorkerRegistry;
 	TSharedPtr<FFlecsGenericWorkerBridgeState, ESPMode::ThreadSafe> WorkerBridgeState;
 	TArray<uint8> LocalManifestDescriptorBytes;
+	bool bSessionConfigured = false;
 	bool bModRegistryFrozen = false;
 	bool bModRegistrySetupFailed = false;
 	bool bRetirementFailClosed = false;

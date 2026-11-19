@@ -437,17 +437,26 @@ void UFlecsNetworkSessionSubsystem::Initialize(FSubsystemCollectionBase& Collect
 {
 	Super::Initialize(Collection);
 	check(IsInGameThread());
-	if (UGameInstance* GameInstance = GetWorld() ? GetWorld()->GetGameInstance() : nullptr)
-	{
-		FlecsGameInstanceSubsystem = GameInstance->GetSubsystem<UFlecsGameInstanceSubsystem>();
-		if (UFlecsGameInstanceSubsystem* FlecsSubsystem = FlecsGameInstanceSubsystem.Get())
-		{
-			WorldDetachHandle = FlecsSubsystem->OnWorldAboutToDetach.AddUObject(
-				this, &UFlecsNetworkSessionSubsystem::HandleWorldAboutToDetach);
-		}
-	}
 	WorkerBridgeState = MakeShared<FFlecsGenericWorkerBridgeState, ESPMode::ThreadSafe>();
 	SessionProtocolVersion = DefaultSessionProtocolVersion;
+	TryConfigureSession();
+}
+
+bool UFlecsNetworkSessionSubsystem::TryConfigureSession()
+{
+	check(IsInGameThread());
+	if (bIsClosing || bSessionConfigured || bModRegistrySetupFailed) return bSessionConfigured && !bIsClosing;
+	UWorld* World = GetWorld();
+	UGameInstance* GameInstance = World ? World->GetGameInstance() : nullptr;
+	UFlecsGameInstanceSubsystem* Flecs = GameInstance ? GameInstance->GetSubsystem<UFlecsGameInstanceSubsystem>() : nullptr;
+	if (!World || !Flecs) return false;
+	// A world can be initialized before its game instance and world subsystem are ready.
+	// Only attach the game instance's current world; never replace a newer world during travel.
+	if (GameInstance->GetWorld() != World) return false;
+	if (!Flecs->IsWorldReady(*World) && !Flecs->AttachWorld(*World)) return false;
+	FlecsGameInstanceSubsystem = Flecs;
+	WorldDetachHandle = Flecs->OnWorldAboutToDetach.AddUObject(
+		this, &UFlecsNetworkSessionSubsystem::HandleWorldAboutToDetach);
 	FString ModRegistrationError;
 	const auto PermissionRegistrar = [this](const FString& Id, FFlecsTrustedPermissionRule Rule, FString& Error)
 	{
@@ -482,7 +491,10 @@ void UFlecsNetworkSessionSubsystem::Initialize(FSubsystemCollectionBase& Collect
 			ServerWorldEpoch = ++NextServerWorldEpoch;
 		}
 	}
+	if (bModRegistrySetupFailed) return false;
+	bSessionConfigured = true;
 	ReconcileConnections();
+	return true;
 }
 
 void UFlecsNetworkSessionSubsystem::Deinitialize()
@@ -509,6 +521,7 @@ void UFlecsNetworkSessionSubsystem::Deinitialize()
 void UFlecsNetworkSessionSubsystem::Tick(float DeltaTime)
 {
 	check(IsInGameThread());
+	if (!bSessionConfigured && !TryConfigureSession()) return;
 	if (!bModRegistryFrozen && !bModRegistrySetupFailed)
 	{
 		UWorld* World = GetWorld();
