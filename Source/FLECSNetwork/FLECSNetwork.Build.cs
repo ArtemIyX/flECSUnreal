@@ -13,6 +13,7 @@ public class FLECSNetwork : ModuleRules
                 "CoreUObject",
                 "Engine",
                 "NetCore",
+                "FLECSModding",
             }
         );
 
@@ -23,6 +24,7 @@ public class FLECSNetwork : ModuleRules
                 "SlateCore"
             }
         );
+        PrivateDependencyModuleNames.Add("FLECS");
         SetupIrisSupport(Target, true);
     }
 }

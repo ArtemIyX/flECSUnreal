@@ -26,6 +26,11 @@
 			"LoadingPhase": "Default"
 		},
 		{
+			"Name": "FLECSModding",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		},
+		{
 			"Name": "FLECSNetwork",
 			"Type": "Runtime",
 			"LoadingPhase": "Default"
