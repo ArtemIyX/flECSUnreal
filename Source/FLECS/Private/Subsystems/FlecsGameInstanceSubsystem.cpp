@@ -1,5 +1,6 @@
 #include "Subsystems/FlecsGameInstanceSubsystem.h"
 #include "FlecsSimulationRunner.h"
+#include "Settings/FlecsDeveloperSettings.h"
 
 #include "Engine/World.h"
 
@@ -50,7 +51,9 @@ bool UFlecsGameInstanceSubsystem::AttachWorld(UWorld& InWorld)
 	StopRunner();
 	ActiveWorld = &InWorld;
 	++WorldGeneration;
-	Runner = MakeShared<FFlecsSimulationRunner, ESPMode::ThreadSafe>(++NextWorldEpoch);
+	const UFlecsDeveloperSettings* Settings = GetDefault<UFlecsDeveloperSettings>();
+	Runner = MakeShared<FFlecsSimulationRunner, ESPMode::ThreadSafe>(++NextWorldEpoch,
+		Settings ? Settings->SimulationRateHz : 60.0f);
 	TArray<FFlecsWorkerCommand> StartupCommands;
 	StartupCommands.Reserve(PersistentWorkerCommands.Num());
 	for (const TPair<FName, FFlecsWorkerCommand>& Entry : PersistentWorkerCommands)

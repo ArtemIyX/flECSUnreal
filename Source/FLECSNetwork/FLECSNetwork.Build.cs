@@ -21,7 +21,8 @@ public class FLECSNetwork : ModuleRules
             new string[]
             {
                 "Slate",
-                "SlateCore"
+                "SlateCore",
+                "DeveloperSettings"
             }
         );
         PrivateDependencyModuleNames.Add("FLECS");

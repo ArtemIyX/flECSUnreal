@@ -30,7 +30,7 @@ public:
 	static constexpr uint32 MaxPublicationExtractors = FlecsMaxDataPublishers;
 	static constexpr double FixedStepSeconds = 1.0 / 60.0;
 
-	explicit FFlecsSimulationRunner(uint64 InEpoch);
+	explicit FFlecsSimulationRunner(uint64 InEpoch, double InSimulationRateHz = 60.0);
 	~FFlecsSimulationRunner();
 	FFlecsSimulationRunner(const FFlecsSimulationRunner&) = delete;
 	FFlecsSimulationRunner& operator=(const FFlecsSimulationRunner&) = delete;
@@ -75,6 +75,7 @@ private:
 	void ShutdownLifecycles(flecs::world& World);
 
 	const uint64 Epoch;
+	const double SimulationStepSeconds;
 	FRunnableThread* Thread = nullptr;
 	FEvent* WakeEvent = nullptr;
 	FEvent* InitializedEvent = nullptr;

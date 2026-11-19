@@ -4,8 +4,9 @@
 #include "HAL/PlatformTime.h"
 #include "HAL/PlatformTLS.h"
 
-FFlecsSimulationRunner::FFlecsSimulationRunner(uint64 InEpoch)
+FFlecsSimulationRunner::FFlecsSimulationRunner(uint64 InEpoch, double InSimulationRateHz)
 	: Epoch(InEpoch)
+	, SimulationStepSeconds(1.0 / (FMath::IsFinite(InSimulationRateHz) ? FMath::Clamp(InSimulationRateHz, 1.0, 240.0) : 60.0))
 {
 	WakeEvent = FPlatformProcess::GetSynchEventFromPool(false);
 	InitializedEvent = FPlatformProcess::GetSynchEventFromPool(false);
@@ -300,28 +301,28 @@ uint32 FFlecsSimulationRunner::Run()
 		{
 			break;
 		}
-		World.progress(static_cast<ecs_ftime_t>(FixedStepSeconds));
+		World.progress(static_cast<ecs_ftime_t>(SimulationStepSeconds));
 		++Tick;
 		++Steps;
 		PublishData(World);
 		const double EndTime = FPlatformTime::Seconds();
 		const double StepSeconds = EndTime - StartTime;
 		MaxStepSeconds = FMath::Max(MaxStepSeconds, StepSeconds);
-		Deadline += FixedStepSeconds;
+		Deadline += SimulationStepSeconds;
 		// Allow at most one immediate catch-up step. Further lateness skips stale
 		// wall-clock deadlines rather than entering an unbounded catch-up loop.
 		const double Lateness = EndTime - Deadline;
 		if (Lateness > 0.0)
 		{
-			if (!bUsedImmediateCatchUp && Lateness <= FixedStepSeconds)
+			if (!bUsedImmediateCatchUp && Lateness <= SimulationStepSeconds)
 			{
 				bUsedImmediateCatchUp = true;
 			}
 			else
 			{
-				const uint64 SkippedDeadlines = static_cast<uint64>(Lateness / FixedStepSeconds) + 1;
+				const uint64 SkippedDeadlines = static_cast<uint64>(Lateness / SimulationStepSeconds) + 1;
 				MissedDeadlines += SkippedDeadlines;
-				Deadline += SkippedDeadlines * FixedStepSeconds;
+				Deadline += SkippedDeadlines * SimulationStepSeconds;
 				bUsedImmediateCatchUp = false;
 			}
 		}

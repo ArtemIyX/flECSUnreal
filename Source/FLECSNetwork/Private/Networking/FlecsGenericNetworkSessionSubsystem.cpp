@@ -5,6 +5,7 @@
 #include "Engine/GameInstance.h"
 #include "GameFramework/PlayerController.h"
 #include "Subsystems/FlecsGameInstanceSubsystem.h"
+#include "Settings/FlecsDeveloperSettings.h"
 #include "FlecsReplicationChannel.h"
 #include "Simulation/FlecsWorkerEntityModel.h"
 #include "FlecsSimulationTypes.h"
@@ -57,6 +58,41 @@ namespace
 			PreviousRadius = Tier.MaxDistance;
 		}
 		return true;
+	}
+
+	TArray<FFlecsRelevanceTier> GetConfiguredDistanceTiers()
+	{
+		const UFlecsDeveloperSettings* Settings = GetDefault<UFlecsDeveloperSettings>();
+		TArray<FFlecsRelevanceTier> Result;
+		bool bValid = Settings && !Settings->DistanceUpdateRates.IsEmpty() &&
+			Settings->DistanceUpdateRates.Num() <= static_cast<int32>(FFlecsPerConnectionScheduler::MaxTiers);
+		float PreviousDistance = 0.0f;
+		if (bValid)
+		{
+			for (const FFlecsDistanceUpdateRate& Setting : Settings->DistanceUpdateRates)
+			{
+				if (!FMath::IsFinite(Setting.MaxDistance) || Setting.MaxDistance <= PreviousDistance ||
+					Setting.MaxDistance > MaxPeerInterestDistance || !FMath::IsFinite(Setting.UpdateRateHz) ||
+					Setting.UpdateRateHz <= 0.0f || Setting.UpdateRateHz > 60.0f)
+				{
+					bValid = false;
+					break;
+				}
+				Result.Add({Setting.MaxDistance, Setting.UpdateRateHz});
+				PreviousDistance = Setting.MaxDistance;
+			}
+		}
+		if (!bValid)
+		{
+			static bool bReportedInvalidSettings = false;
+			if (!bReportedInvalidSettings)
+			{
+				UE_LOG(LogTemp, Warning, TEXT("Invalid FLECS distance update rates; using default relevance tiers."));
+				bReportedInvalidSettings = true;
+			}
+			return FFlecsPerConnectionScheduler::MakeDefaultTiers();
+		}
+		return Result;
 	}
 
 	void AppendU16(TArray<uint8>& Bytes, uint16 Value)
@@ -1106,7 +1142,7 @@ void UFlecsNetworkSessionSubsystem::ProcessServerReplication()
 		const FVector FocalLocation = Controller->GetFocalLocation();
 		Interest.ViewPosition = FVector3f(static_cast<float>(FocalLocation.X),
 			static_cast<float>(FocalLocation.Y), static_cast<float>(FocalLocation.Z));
-		Interest.Tiers = FFlecsPerConnectionScheduler::MakeDefaultTiers();
+		Interest.Tiers = GetConfiguredDistanceTiers();
 		FFlecsRelevanceBudget Budget;
 		Budget.MaxRecords = 128;
 		Budget.MaxBytes = 64 * 1024;
