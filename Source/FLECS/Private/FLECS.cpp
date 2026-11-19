@@ -54,6 +54,8 @@
 #pragma comment(linker, "/export:ecs_query_fini")
 #pragma comment(linker, "/export:ecs_query_iter")
 #pragma comment(linker, "/export:ecs_query_next")
+#pragma comment(linker, "/export:ecs_each_id")
+#pragma comment(linker, "/export:ecs_each_next")
 #pragma comment(linker, "/export:ecs_field_w_size")
 #pragma comment(linker, "/export:ecs_field_at_w_size")
 #pragma comment(linker, "/export:ecs_cpp_get_type_name")
