@@ -35,6 +35,15 @@ struct FFlecsTrustedSpatialDefinition
 	FFlecsTrustedPositionAccessor PositionAccessor;
 };
 
+/** Synchronous game-thread registration hooks. Do not retain these callbacks after setup. */
+struct FFlecsNetworkSessionRegistrar
+{
+	FlecsModRegistry::FRegistry& Registry;
+	TFunctionRef<bool(const FString&, FFlecsTrustedPermissionRule, FString&)> RegisterPermission;
+	TFunctionRef<bool(const FString&, EFlecsTrustedSpatialPolicy, FFlecsTrustedPositionAccessor, FString&)> RegisterSpatial;
+	TFunctionRef<bool(FFlecsPeerSpawnFactory, FString&)> SetPeerSpawnFactory;
+};
+
 /** Opaque identity for one observed player connection incarnation. */
 struct FConnectionIncarnation
 {
