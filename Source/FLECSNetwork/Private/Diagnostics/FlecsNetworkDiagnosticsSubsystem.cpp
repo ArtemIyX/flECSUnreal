@@ -40,9 +40,9 @@ void UFlecsNetworkDiagnosticsSubsystem::RecordPayload(int32 Kind, bool bSent, ui
  uint64& Total = bSent ? Snapshot.Sent[Kind] : Snapshot.Received[Kind];
  Total = MAX_uint64 - Total < Bytes ? MAX_uint64 : Total + Bytes;
  const uint32 StatBytes = static_cast<uint32>(FMath::Min<uint64>(Bytes, MAX_uint32));
- if (Kind == 0) { if (bSent) INC_DWORD_STAT_BY(STAT_FlecsNetworkStateSent, StatBytes); else INC_DWORD_STAT_BY(STAT_FlecsNetworkStateReceived, StatBytes); }
- else if (Kind == 1) { if (bSent) INC_DWORD_STAT_BY(STAT_FlecsNetworkCommandSent, StatBytes); else INC_DWORD_STAT_BY(STAT_FlecsNetworkCommandReceived, StatBytes); }
- else { if (bSent) INC_DWORD_STAT_BY(STAT_FlecsNetworkManifestSent, StatBytes); else INC_DWORD_STAT_BY(STAT_FlecsNetworkManifestReceived, StatBytes); }
+ if (Kind == 0) { if (bSent) { INC_DWORD_STAT_BY(STAT_FlecsNetworkStateSent, StatBytes); } else { INC_DWORD_STAT_BY(STAT_FlecsNetworkStateReceived, StatBytes); } }
+ else if (Kind == 1) { if (bSent) { INC_DWORD_STAT_BY(STAT_FlecsNetworkCommandSent, StatBytes); } else { INC_DWORD_STAT_BY(STAT_FlecsNetworkCommandReceived, StatBytes); } }
+ else { if (bSent) { INC_DWORD_STAT_BY(STAT_FlecsNetworkManifestSent, StatBytes); } else { INC_DWORD_STAT_BY(STAT_FlecsNetworkManifestReceived, StatBytes); } }
 }
 void UFlecsNetworkDiagnosticsSubsystem::ResetRelevance()
 {
@@ -70,8 +70,8 @@ void UFlecsNetworkDiagnosticsSubsystem::Tick(float DeltaTime)
  uint64 BufferBytes = 0;
  if (UWorld* World = GetWorld())
   for (TActorIterator<AFlecsReplicationChannel> It(World); It; ++It) BufferBytes += It->GetDiagnosticsAllocatedBytes();
- if (BufferBytes >= Snapshot.NetworkBufferBytes) INC_MEMORY_STAT_BY(STAT_FlecsNetworkBuffers, BufferBytes - Snapshot.NetworkBufferBytes);
- else DEC_MEMORY_STAT_BY(STAT_FlecsNetworkBuffers, Snapshot.NetworkBufferBytes - BufferBytes);
+ if (BufferBytes >= Snapshot.NetworkBufferBytes) { INC_MEMORY_STAT_BY(STAT_FlecsNetworkBuffers, BufferBytes - Snapshot.NetworkBufferBytes); }
+ else { DEC_MEMORY_STAT_BY(STAT_FlecsNetworkBuffers, Snapshot.NetworkBufferBytes - BufferBytes); }
  Snapshot.NetworkBufferBytes = BufferBytes;
  LastSampleTime = Now;
 }

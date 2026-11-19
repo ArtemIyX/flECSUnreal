@@ -325,15 +325,15 @@ uint32 FFlecsSimulationRunner::Run()
 			World.progress(static_cast<ecs_ftime_t>(SimulationStepSeconds));
 		}
 		LastSystemSeconds = bMeasureSystems ? FMath::Max(0.0, static_cast<double>(ecs_get_world_info(World.c_ptr())->system_time_total) - PreviousSystemTime) : 0.0;
-		if (bMeasureSystems) INC_FLOAT_STAT_BY(STAT_FlecsSystemMilliseconds, LastSystemSeconds * 1000.0);
+		if (bMeasureSystems) { INC_FLOAT_STAT_BY(STAT_FlecsSystemMilliseconds, LastSystemSeconds * 1000.0); }
 		if (CVarFlecsWorldMemory.GetValueOnAnyThread() != 0)
 		{
 			if (StartTime >= NextMemorySampleSeconds)
 			{
 				const ecs_size_t Measured = ecs_memory_get(World.c_ptr());
 				const uint64 Sample = Measured >= 0 ? static_cast<uint64>(Measured) : 0;
-				if (Sample >= WorldMemoryBytes) INC_MEMORY_STAT_BY(STAT_FlecsWorldMemory, Sample - WorldMemoryBytes);
-				else DEC_MEMORY_STAT_BY(STAT_FlecsWorldMemory, WorldMemoryBytes - Sample);
+				if (Sample >= WorldMemoryBytes) { INC_MEMORY_STAT_BY(STAT_FlecsWorldMemory, Sample - WorldMemoryBytes); }
+				else { DEC_MEMORY_STAT_BY(STAT_FlecsWorldMemory, WorldMemoryBytes - Sample); }
 				WorldMemoryBytes = Sample;
 				bWorldMemoryAvailable = Measured >= 0;
 				NextMemorySampleSeconds = StartTime + 1.0;
@@ -381,7 +381,7 @@ uint32 FFlecsSimulationRunner::Run()
 	// controls (and discard gameplay commands) before paired shutdown callbacks.
 	ProcessQueuedWork(World, MaxQueuedCommands, true);
 	ShutdownLifecycles(World);
-	if (bWorldMemoryAvailable) DEC_MEMORY_STAT_BY(STAT_FlecsWorldMemory, WorldMemoryBytes);
+	if (bWorldMemoryAvailable) { DEC_MEMORY_STAT_BY(STAT_FlecsWorldMemory, WorldMemoryBytes); }
 	DEC_MEMORY_STAT_BY(STAT_FlecsPublicationMemory, PublicationAllocatedBytes);
 	return 0;
 }
@@ -535,8 +535,8 @@ void FFlecsSimulationRunner::PublishData(flecs::world& World)
 	NewDataPublication->Items = Builder.TakeItems();
 	uint64 NewAllocatedBytes = sizeof(FFlecsSimulationDataPublication) + NewDataPublication->Items.GetAllocatedSize();
 	for (const FFlecsSimulationDataItem& Item : NewDataPublication->Items) NewAllocatedBytes += Item.Payload.GetAllocatedSize();
-	if (NewAllocatedBytes >= PublicationAllocatedBytes) INC_MEMORY_STAT_BY(STAT_FlecsPublicationMemory, NewAllocatedBytes - PublicationAllocatedBytes);
-	else DEC_MEMORY_STAT_BY(STAT_FlecsPublicationMemory, PublicationAllocatedBytes - NewAllocatedBytes);
+	if (NewAllocatedBytes >= PublicationAllocatedBytes) { INC_MEMORY_STAT_BY(STAT_FlecsPublicationMemory, NewAllocatedBytes - PublicationAllocatedBytes); }
+	else { DEC_MEMORY_STAT_BY(STAT_FlecsPublicationMemory, PublicationAllocatedBytes - NewAllocatedBytes); }
 	PublicationAllocatedBytes = NewAllocatedBytes;
 	INC_DWORD_STAT_BY(STAT_FlecsPublicationItems, PublishedDataItems);
 	FScopeLock Lock(&PublicationMutex);
