@@ -159,17 +159,23 @@ and destroys its Flecs world. Unreal world attach and detach notifications remai
 on the game thread; detach wakes and joins the worker before its session ends.
 
 The worker advances at a fixed `1/60` second step, independent of Unreal frame
-rate and time dilation. Pause is explicit through `SetSimulationPaused`; queued
-commands still drain while paused. A slow step may cause at most one immediate
-catch-up step; deadlines more than one step behind are skipped and counted. The
-fixed delta is never adjusted. This is a best-effort clock, not a real-time
-guarantee.
+rate and time dilation. Pause is explicit through `SetSimulationPaused`; it
+takes effect at the next step boundary, freezes the simulation clock, and leaves
+queued commands pending. Resume schedules the next step immediately, then returns
+to the fixed cadence. Commands are applied only at a step boundary, before
+progress, with at most 64 commands processed per step. This keeps sustained
+command ingress from starving simulation progress. A late step may cause at
+most one immediate catch-up step; additional lateness skips stale deadlines and
+counts them. The fixed delta is never adjusted. This is a best-effort clock, not
+a real-time guarantee.
 
 Submit bounded commands through `SubmitWorkerCommand`, or register systems via
 the subsystem registration helpers. These callbacks execute on the simulation
 worker. They must not capture or access UObjects, the game thread, or Unreal
 network objects. The queue rejects work after its 1,024-command capacity and
 reports rejection count, depth, and oldest queued-command age in the immutable
-simulation publication. The publication also reports epoch, tick, step time,
-maximum step time, deadline lateness, and missed deadlines. Do not retain Flecs
-entities, iterators, or pointers outside a worker callback.
+simulation publication. The publication also reports epoch, tick, commands
+applied at the last boundary, step time, maximum step time, deadline lateness,
+and skipped deadlines. Command submission does not wake the worker; pause,
+resume, and shutdown controls do. Do not retain Flecs entities, iterators, or
+pointers outside a worker callback.

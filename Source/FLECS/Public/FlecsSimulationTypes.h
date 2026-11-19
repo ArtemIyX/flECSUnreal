@@ -13,6 +13,7 @@ struct FFlecsSimulationPublication
 	uint64 Steps = 0;
 	uint64 MissedDeadlines = 0;
 	uint64 RejectedCommands = 0;
+	uint64 CommandsAppliedLastStep = 0;
 	double LastStepSeconds = 0.0;
 	double MaxStepSeconds = 0.0;
 	double LastDeadlineLatenessSeconds = 0.0;

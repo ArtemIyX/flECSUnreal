@@ -59,7 +59,6 @@ bool FFlecsSimulationRunner::Submit(FWorkerCommand&& Command)
 		}
 		Commands.push_back({ std::move(Command), FPlatformTime::Seconds() });
 	}
-	WakeEvent->Trigger();
 	return true;
 }
 
@@ -81,31 +80,24 @@ uint32 FFlecsSimulationRunner::Run()
 	OwnerThreadId = FPlatformTLS::GetCurrentThreadId();
 	flecs::world World;
 	double Deadline = FPlatformTime::Seconds();
+	bool bUsedImmediateCatchUp = false;
 	while (!bStopping.load(std::memory_order_acquire))
 	{
-		std::deque<FQueuedCommand> Pending;
+		if (bPaused.load(std::memory_order_acquire))
 		{
-			std::lock_guard<std::mutex> Lock(QueueMutex);
-			Pending.swap(Commands);
-		}
-		for (FQueuedCommand& Command : Pending)
-		{
-			check(FPlatformTLS::GetCurrentThreadId() == OwnerThreadId);
+			CommandsAppliedLastStep = 0;
+			bUsedImmediateCatchUp = false;
+			Publish(0.0);
+			WakeEvent->Wait();
 			if (bStopping.load(std::memory_order_acquire))
 			{
 				break;
 			}
-			Command.Callback(World);
-		}
-
-		if (bStopping.load(std::memory_order_acquire))
-		{
-			break;
-		}
-		if (bPaused.load(std::memory_order_acquire))
-		{
-			Publish(0.0);
-			WakeEvent->Wait();
+			if (bPaused.load(std::memory_order_acquire))
+			{
+				continue;
+			}
+			// Paused time does not accumulate; resume schedules the next boundary now.
 			Deadline = FPlatformTime::Seconds();
 			continue;
 		}
@@ -116,10 +108,40 @@ uint32 FFlecsSimulationRunner::Run()
 			WakeEvent->Wait(static_cast<uint32>((Deadline - Now) * 1000.0));
 			continue;
 		}
+		if (bPaused.load(std::memory_order_acquire))
+		{
+			continue;
+		}
 
 		const double StartTime = FPlatformTime::Seconds();
 		LastDeadlineLatenessSeconds = FMath::Max(0.0, StartTime - Deadline);
 		check(FPlatformTLS::GetCurrentThreadId() == OwnerThreadId);
+		// Commands are applied only at a fixed-step boundary. The per-step cap
+		// ensures sustained ingress cannot postpone simulation progress indefinitely.
+		CommandsAppliedLastStep = 0;
+		while (CommandsAppliedLastStep < MaxCommandsPerStep)
+		{
+			FQueuedCommand Command;
+			{
+				std::lock_guard<std::mutex> Lock(QueueMutex);
+				if (Commands.empty())
+				{
+					break;
+				}
+				Command = std::move(Commands.front());
+				Commands.pop_front();
+			}
+			if (bStopping.load(std::memory_order_acquire))
+			{
+				break;
+			}
+			Command.Callback(World);
+			++CommandsAppliedLastStep;
+		}
+		if (bStopping.load(std::memory_order_acquire))
+		{
+			break;
+		}
 		World.progress(static_cast<ecs_ftime_t>(FixedStepSeconds));
 		const double EndTime = FPlatformTime::Seconds();
 		++Tick;
@@ -127,12 +149,26 @@ uint32 FFlecsSimulationRunner::Run()
 		const double StepSeconds = EndTime - StartTime;
 		MaxStepSeconds = FMath::Max(MaxStepSeconds, StepSeconds);
 		Deadline += FixedStepSeconds;
-		// Cap catch-up to one immediate step. Skip stale wall-clock deadlines rather
-		// than changing the fixed delta or entering an unbounded catch-up loop.
-		if (EndTime - Deadline > FixedStepSeconds)
+		// Allow at most one immediate catch-up step. Further lateness skips stale
+		// wall-clock deadlines rather than entering an unbounded catch-up loop.
+		const double Lateness = EndTime - Deadline;
+		if (Lateness > 0.0)
 		{
-			++MissedDeadlines;
-			Deadline = EndTime + FixedStepSeconds;
+			if (!bUsedImmediateCatchUp && Lateness <= FixedStepSeconds)
+			{
+				bUsedImmediateCatchUp = true;
+			}
+			else
+			{
+				const uint64 SkippedDeadlines = static_cast<uint64>(Lateness / FixedStepSeconds) + 1;
+				MissedDeadlines += SkippedDeadlines;
+				Deadline += SkippedDeadlines * FixedStepSeconds;
+				bUsedImmediateCatchUp = false;
+			}
+		}
+		else
+		{
+			bUsedImmediateCatchUp = false;
 		}
 		Publish(StepSeconds);
 	}
@@ -161,6 +197,7 @@ void FFlecsSimulationRunner::Publish(double StepSeconds)
 	NewPublication->Steps = Steps;
 	NewPublication->MissedDeadlines = MissedDeadlines;
 	NewPublication->RejectedCommands = RejectedCommands.load(std::memory_order_relaxed);
+	NewPublication->CommandsAppliedLastStep = CommandsAppliedLastStep;
 	NewPublication->LastStepSeconds = StepSeconds;
 	NewPublication->MaxStepSeconds = MaxStepSeconds;
 	NewPublication->LastDeadlineLatenessSeconds = LastDeadlineLatenessSeconds;

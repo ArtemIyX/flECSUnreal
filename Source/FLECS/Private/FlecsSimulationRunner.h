@@ -21,6 +21,7 @@ public:
 		double EnqueuedAt = 0.0;
 	};
 	static constexpr uint64 MaxQueuedCommands = 1024;
+	static constexpr uint64 MaxCommandsPerStep = 64;
 	static constexpr double FixedStepSeconds = 1.0 / 60.0;
 
 	explicit FFlecsSimulationRunner(uint64 InEpoch);
@@ -53,6 +54,7 @@ private:
 	uint64 Tick = 0;
 	uint64 Steps = 0;
 	uint64 MissedDeadlines = 0;
+	uint64 CommandsAppliedLastStep = 0;
 	std::atomic<uint64> RejectedCommands{ 0 };
 	double MaxStepSeconds = 0.0;
 	double LastDeadlineLatenessSeconds = 0.0;
