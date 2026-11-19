@@ -35,7 +35,13 @@ public:
 	 * and must not capture or access any UObject or Unreal connection state. */
 	EFlecsWorkerCommandResult SubmitWorkerCommand(uint64 ExpectedEpoch, FFlecsWorkerCommand&& Command);
 	bool RegisterPersistentWorkerCommand(FName Name, FFlecsWorkerCommand&& Command);
+	/** Register a bounded DTO extractor before world attachment. It runs on the
+	 * simulation worker after each fixed step; no UObject access is allowed. Each
+	 * publication is capped by FlecsMaxDataPublication* in FlecsSimulationTypes.h;
+	 * at most FlecsMaxDataPublishers extractors can be registered. */
+	bool RegisterPersistentDataPublisher(FName Name, FFlecsWorkerDataPublisher&& Publisher);
 	TSharedPtr<const FFlecsSimulationPublication, ESPMode::ThreadSafe> GetPublication() const;
+	TSharedPtr<const FFlecsSimulationDataPublication, ESPMode::ThreadSafe> GetDataPublication() const;
 	void SetSimulationPaused(bool bPaused);
 
 	FFlecsWorldLifecycleEvent OnWorldAboutToDetach;
@@ -72,4 +78,5 @@ private:
 	uint64 WorldSerial = 0;
 	bool bIsShuttingDown = false;
 	TMap<FName, FFlecsWorkerCommand> PersistentWorkerCommands;
+	TMap<FName, FFlecsWorkerDataPublisher> PersistentDataPublishers;
 };

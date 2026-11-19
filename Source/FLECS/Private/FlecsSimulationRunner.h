@@ -22,6 +22,7 @@ public:
 	};
 	static constexpr uint64 MaxQueuedCommands = 1024;
 	static constexpr uint64 MaxCommandsPerStep = 64;
+	static constexpr uint32 MaxPublicationExtractors = FlecsMaxDataPublishers;
 	static constexpr double FixedStepSeconds = 1.0 / 60.0;
 
 	explicit FFlecsSimulationRunner(uint64 InEpoch);
@@ -29,8 +30,8 @@ public:
 	FFlecsSimulationRunner(const FFlecsSimulationRunner&) = delete;
 	FFlecsSimulationRunner& operator=(const FFlecsSimulationRunner&) = delete;
 
-	bool Start(TArray<FWorkerCommand>&& StartupCommands);
-	bool Start() { return Start(TArray<FWorkerCommand>()); }
+	bool Start(TArray<FWorkerCommand>&& StartupCommands, TArray<FFlecsWorkerDataPublisher>&& StartupPublishers);
+	bool Start() { return Start(TArray<FWorkerCommand>(), TArray<FFlecsWorkerDataPublisher>()); }
 	void StopAndJoin();
 	EFlecsWorkerCommandResult Submit(uint64 ExpectedEpoch, FWorkerCommand&& Command);
 	bool Submit(FWorkerCommand&& Command)
@@ -39,6 +40,7 @@ public:
 	}
 	void SetPaused(bool bInPaused);
 	TSharedPtr<const FFlecsSimulationPublication, ESPMode::ThreadSafe> GetPublication() const;
+	TSharedPtr<const FFlecsSimulationDataPublication, ESPMode::ThreadSafe> GetDataPublication() const;
 	uint64 GetEpoch() const { return Epoch; }
 
 private:
@@ -46,12 +48,15 @@ private:
 	virtual void Stop() override;
 	virtual void Exit() override;
 	void Publish(double StepSeconds);
+	void PublishData(flecs::world& World);
 
 	const uint64 Epoch;
 	FRunnableThread* Thread = nullptr;
 	FEvent* WakeEvent = nullptr;
 	FEvent* InitializedEvent = nullptr;
 	TArray<FWorkerCommand> StartupCommands;
+	TArray<FFlecsWorkerDataPublisher> StartupPublishers;
+	TArray<FFlecsWorkerDataPublisher> DataPublishers;
 	std::atomic<bool> bInitializationSucceeded{ false };
 	std::mutex QueueMutex;
 	std::deque<FQueuedCommand> Commands;
@@ -59,10 +64,14 @@ private:
 	std::atomic<bool> bPaused{ false };
 	mutable FCriticalSection PublicationMutex;
 	TSharedPtr<const FFlecsSimulationPublication, ESPMode::ThreadSafe> Publication;
+	TSharedPtr<const FFlecsSimulationDataPublication, ESPMode::ThreadSafe> DataPublication;
 	uint64 Tick = 0;
 	uint64 Steps = 0;
 	uint64 MissedDeadlines = 0;
 	uint64 CommandsAppliedLastStep = 0;
+	uint64 PublishedDataItems = 0;
+	uint64 PublishedDataBytes = 0;
+	uint64 RejectedDataItems = 0;
 	std::atomic<uint64> RejectedCommands{ 0 };
 	double MaxStepSeconds = 0.0;
 	double LastDeadlineLatenessSeconds = 0.0;

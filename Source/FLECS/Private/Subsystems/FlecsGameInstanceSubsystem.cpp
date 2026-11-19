@@ -57,7 +57,13 @@ bool UFlecsGameInstanceSubsystem::AttachWorld(UWorld& InWorld)
 	{
 		StartupCommands.Add(Entry.Value);
 	}
-	if (!Runner->Start(MoveTemp(StartupCommands)))
+	TArray<FFlecsWorkerDataPublisher> StartupPublishers;
+	StartupPublishers.Reserve(PersistentDataPublishers.Num());
+	for (const TPair<FName, FFlecsWorkerDataPublisher>& Entry : PersistentDataPublishers)
+	{
+		StartupPublishers.Add(Entry.Value);
+	}
+	if (!Runner->Start(MoveTemp(StartupCommands), MoveTemp(StartupPublishers)))
 	{
 		UE_LOG(LogTemp, Error, TEXT("FLECS simulation worker failed to initialize; the world will not advance."));
 		Runner.Reset();
@@ -132,10 +138,37 @@ bool UFlecsGameInstanceSubsystem::RegisterPersistentWorkerCommand(FName Name, FF
 	return Result == EFlecsWorkerCommandResult::Accepted;
 }
 
+bool UFlecsGameInstanceSubsystem::RegisterPersistentDataPublisher(
+	FName Name, FFlecsWorkerDataPublisher&& Publisher)
+{
+	check(IsInGameThread());
+	if (Name.IsNone() || !Publisher || Runner.IsValid())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Flecs data publishers must be valid and registered before world attachment."));
+		return false;
+	}
+	if (!PersistentDataPublishers.Contains(Name) &&
+		PersistentDataPublishers.Num() >= static_cast<int32>(FlecsMaxDataPublishers))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Flecs data publisher registry reached its %u-entry limit."),
+			FlecsMaxDataPublishers);
+		return false;
+	}
+	PersistentDataPublishers.Add(Name, MoveTemp(Publisher));
+	return true;
+}
+
 TSharedPtr<const FFlecsSimulationPublication, ESPMode::ThreadSafe> UFlecsGameInstanceSubsystem::GetPublication() const
 {
 	check(IsInGameThread());
 	return Runner.IsValid() ? Runner->GetPublication() : nullptr;
+}
+
+TSharedPtr<const FFlecsSimulationDataPublication, ESPMode::ThreadSafe>
+UFlecsGameInstanceSubsystem::GetDataPublication() const
+{
+	check(IsInGameThread());
+	return Runner.IsValid() ? Runner->GetDataPublication() : nullptr;
 }
 
 void UFlecsGameInstanceSubsystem::SetSimulationPaused(bool bPaused)

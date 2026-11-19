@@ -26,9 +26,12 @@ FFlecsSimulationRunner::~FFlecsSimulationRunner()
 	}
 }
 
-bool FFlecsSimulationRunner::Start(TArray<FWorkerCommand>&& InStartupCommands)
+bool FFlecsSimulationRunner::Start(
+	TArray<FWorkerCommand>&& InStartupCommands,
+	TArray<FFlecsWorkerDataPublisher>&& InStartupPublishers)
 {
-	if (Thread || !WakeEvent || !InitializedEvent || InStartupCommands.Num() > MaxQueuedCommands)
+	if (Thread || !WakeEvent || !InitializedEvent || InStartupCommands.Num() > MaxQueuedCommands ||
+		InStartupPublishers.Num() > static_cast<int32>(MaxPublicationExtractors))
 	{
 		return false;
 	}
@@ -39,7 +42,15 @@ bool FFlecsSimulationRunner::Start(TArray<FWorkerCommand>&& InStartupCommands)
 			return false;
 		}
 	}
+	for (const FFlecsWorkerDataPublisher& Publisher : InStartupPublishers)
+	{
+		if (!Publisher)
+		{
+			return false;
+		}
+	}
 	StartupCommands = MoveTemp(InStartupCommands);
+	StartupPublishers = MoveTemp(InStartupPublishers);
 	bInitializationSucceeded.store(false, std::memory_order_release);
 	bStopping.store(false, std::memory_order_release);
 	Thread = FRunnableThread::Create(this, TEXT("FlecsSimulation"), 0, TPri_Normal);
@@ -111,6 +122,12 @@ TSharedPtr<const FFlecsSimulationPublication, ESPMode::ThreadSafe> FFlecsSimulat
 	return Publication;
 }
 
+TSharedPtr<const FFlecsSimulationDataPublication, ESPMode::ThreadSafe> FFlecsSimulationRunner::GetDataPublication() const
+{
+	FScopeLock Lock(&PublicationMutex);
+	return DataPublication;
+}
+
 uint32 FFlecsSimulationRunner::Run()
 {
 	// The Flecs world is intentionally created and destroyed on this thread.
@@ -122,6 +139,7 @@ uint32 FFlecsSimulationRunner::Run()
 		Command(World);
 	}
 	StartupCommands.Empty();
+	DataPublishers = MoveTemp(StartupPublishers);
 	bInitializationSucceeded.store(true, std::memory_order_release);
 	InitializedEvent->Trigger();
 	double Deadline = FPlatformTime::Seconds();
@@ -188,9 +206,10 @@ uint32 FFlecsSimulationRunner::Run()
 			break;
 		}
 		World.progress(static_cast<ecs_ftime_t>(FixedStepSeconds));
-		const double EndTime = FPlatformTime::Seconds();
 		++Tick;
 		++Steps;
+		PublishData(World);
+		const double EndTime = FPlatformTime::Seconds();
 		const double StepSeconds = EndTime - StartTime;
 		MaxStepSeconds = FMath::Max(MaxStepSeconds, StepSeconds);
 		Deadline += FixedStepSeconds;
@@ -243,6 +262,9 @@ void FFlecsSimulationRunner::Publish(double StepSeconds)
 	NewPublication->MissedDeadlines = MissedDeadlines;
 	NewPublication->RejectedCommands = RejectedCommands.load(std::memory_order_relaxed);
 	NewPublication->CommandsAppliedLastStep = CommandsAppliedLastStep;
+	NewPublication->PublishedDataItems = PublishedDataItems;
+	NewPublication->PublishedDataBytes = PublishedDataBytes;
+	NewPublication->RejectedDataItems = RejectedDataItems;
 	NewPublication->LastStepSeconds = StepSeconds;
 	NewPublication->MaxStepSeconds = MaxStepSeconds;
 	NewPublication->LastDeadlineLatenessSeconds = LastDeadlineLatenessSeconds;
@@ -256,4 +278,27 @@ void FFlecsSimulationRunner::Publish(double StepSeconds)
 	}
 	FScopeLock Lock(&PublicationMutex);
 	Publication = MoveTemp(NewPublication);
+}
+
+void FFlecsSimulationRunner::PublishData(flecs::world& World)
+{
+	FFlecsSimulationDataBuilder Builder;
+	for (FFlecsWorkerDataPublisher& Publisher : DataPublishers)
+	{
+		check(FPlatformTLS::GetCurrentThreadId() == OwnerThreadId);
+		Publisher(World, Builder);
+	}
+
+	PublishedDataItems = Builder.GetItems().Num();
+	PublishedDataBytes = Builder.GetTotalBytes();
+	RejectedDataItems = Builder.GetRejectedItems();
+	auto NewDataPublication = MakeShared<FFlecsSimulationDataPublication, ESPMode::ThreadSafe>();
+	NewDataPublication->LocalAttachmentEpoch = Epoch;
+	NewDataPublication->SimulationTick = Tick;
+	NewDataPublication->TimestampSeconds = FPlatformTime::Seconds();
+	NewDataPublication->TotalBytes = Builder.GetTotalBytes();
+	NewDataPublication->RejectedItems = Builder.GetRejectedItems();
+	NewDataPublication->Items = Builder.TakeItems();
+	FScopeLock Lock(&PublicationMutex);
+	DataPublication = MoveTemp(NewDataPublication);
 }
