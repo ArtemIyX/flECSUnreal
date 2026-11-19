@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "flecs.h"
+#include "flecs/addons/cpp/flecs.hpp"
 
 #include <functional>
 
