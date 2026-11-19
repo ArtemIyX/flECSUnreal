@@ -7,6 +7,7 @@
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "FlecsReplicationChannel.h"
+#include "Networking/FlecsGenericNetworkSessionSubsystem.h"
 #include "GameFramework/PlayerController.h"
 #include "HAL/IConsoleManager.h"
 #include "HAL/PlatformTime.h"
@@ -31,6 +32,7 @@ void UFlecsNetworkDiagnosticsSubsystem::Deinitialize()
 	if (DrawHandle.IsValid())
 		UDebugDrawService::Unregister(DrawHandle);
 	DEC_MEMORY_STAT_BY(STAT_FlecsNetworkBuffers, Snapshot.NetworkBufferBytes);
+	DEC_MEMORY_STAT_BY(STAT_FlecsNetworkSpatialContainers, Snapshot.SpatialContainerBytes);
 	Snapshot = {};
 	Super::Deinitialize();
 }
@@ -126,6 +128,21 @@ void UFlecsNetworkDiagnosticsSubsystem::Tick(float DeltaTime)
 		DEC_MEMORY_STAT_BY(STAT_FlecsNetworkBuffers, Snapshot.NetworkBufferBytes - BufferBytes);
 	}
 	Snapshot.NetworkBufferBytes = BufferBytes;
+	uint64 SpatialBytes = 0;
+	if (UWorld* World = GetWorld())
+	{
+		if (const UFlecsNetworkSessionSubsystem* Session = World->GetSubsystem<UFlecsNetworkSessionSubsystem>())
+			SpatialBytes = Session->GetTrackedSpatialContainerBytes();
+	}
+	if (SpatialBytes >= Snapshot.SpatialContainerBytes)
+	{
+		INC_MEMORY_STAT_BY(STAT_FlecsNetworkSpatialContainers, SpatialBytes - Snapshot.SpatialContainerBytes);
+	}
+	else
+	{
+		DEC_MEMORY_STAT_BY(STAT_FlecsNetworkSpatialContainers, Snapshot.SpatialContainerBytes - SpatialBytes);
+	}
+	Snapshot.SpatialContainerBytes = SpatialBytes;
 	LastSampleTime = Now;
 }
 void UFlecsNetworkDiagnosticsSubsystem::DrawOverlay(UCanvas* Canvas, APlayerController* Controller)
@@ -157,9 +174,9 @@ void UFlecsNetworkDiagnosticsSubsystem::DrawOverlay(UCanvas* Canvas, APlayerCont
 		Snapshot.Received[2]);
 	Text += FString::Printf(
 		TEXT(
-			"Rates state %.0f/%.0f, command %.0f/%.0f, manifest %.0f/%.0f B/s (sent/received)\nBuffers %llu B | relevant %u | selected %u | deferred %u"),
+			"Rates state %.0f/%.0f, command %.0f/%.0f, manifest %.0f/%.0f B/s (sent/received)\nChannel buffers %llu B | spatial containers %llu B (partial)\nRelevant %u | selected %u | deferred %u"),
 		Snapshot.SentBytesPerSecond[0], Snapshot.ReceivedBytesPerSecond[0], Snapshot.SentBytesPerSecond[1],
 		Snapshot.ReceivedBytesPerSecond[1], Snapshot.SentBytesPerSecond[2], Snapshot.ReceivedBytesPerSecond[2],
-		Snapshot.NetworkBufferBytes, Snapshot.Relevant, Snapshot.Selected, Snapshot.Deferred);
+		Snapshot.NetworkBufferBytes, Snapshot.SpatialContainerBytes, Snapshot.Relevant, Snapshot.Selected, Snapshot.Deferred);
 	Canvas->DrawText(GEngine->GetSmallFont(), Text, 24.0f, 24.0f);
 }

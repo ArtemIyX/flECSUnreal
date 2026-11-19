@@ -194,6 +194,8 @@ Use `QueueSharedEntitySpawn` for an unowned authoritative entity and `QueuePeerE
 
 **Project Settings → Plugins → FLECS** contains the simulation frequency and distance/update-rate tiers. Distances are in Unreal centimeters; rates are in Hz. Tier rates are replication limits, not simulation rates. Component caps, visibility, hysteresis, custom interest, budgets, and network conditions can further affect delivery.
 
+The networking limits also set a world capacity of up to 100,000 network-managed entities (default 5,000), a separate per-peer relevant-entity cap, and per-peer selection budgets. Configure matching world capacities on server and clients before starting a session. Spatial snapshots cross threads in bounded acknowledged chunks; incomplete generations are never used for relevance. High capacities increase memory and can increase snapshot latency. The limit is a capacity bound, not a performance guarantee. See [FLECSNetwork](Source/FLECSNetwork/README.md) for retained-baseline limits and compatibility details.
+
 | Console command | Purpose |
 | --- | --- |
 | `stat Flecs` | Worker step, Flecs progress, queue/publication counters, and memory stats. |

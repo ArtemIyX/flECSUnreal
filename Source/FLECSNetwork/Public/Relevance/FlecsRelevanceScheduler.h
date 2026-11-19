@@ -12,17 +12,20 @@
 #include "Data/Structs/FlecsRelevanceSelection.h"
 #include "Data/Enums/FlecsNetworkVisibility.h"
 #include "Data/Enums/FlecsRelevanceTransition.h"
+#include "Networking/FlecsNetworkLimits.h"
 
 /** Bounded uniform-grid index over copied publication data. Rebuild once per snapshot. */
 class FLECSNETWORK_API FFlecsSpatialIndex
 {
 public:
-	static constexpr int32 MaxEntities = 5000;
+	static constexpr int32 MaxEntities = FlecsNetworkLimits::MaxEntityCapacity;
 	static constexpr int32 MaxCellsPerQuery = 32768;
 
 	bool Build(const FFlecsSpatialSnapshot& Snapshot, float CellSize = 2000.0f);
 	void QuerySphere(const FVector3f& Center, float Radius, TArray<const FFlecsSpatialEntity*>& OutEntities) const;
 	const FFlecsSpatialSnapshot* GetSnapshot() const { return Snapshot; }
+	/** Index container allocations; excludes allocator overhead. */
+	uint64 GetTrackedContainerBytes() const;
 
 private:
 	static FIntVector ToCell(const FVector3f& Position, float CellSize);
@@ -30,6 +33,7 @@ private:
 	const FFlecsSpatialSnapshot* Snapshot = nullptr;
 	float GridCellSize = 0.0f;
 	TMap<FIntVector, TArray<int32>> Cells;
+	uint64 CellArrayBytes = 0;
 };
 
 /**
@@ -40,13 +44,20 @@ private:
 class FLECSNETWORK_API FFlecsPerConnectionScheduler
 {
 public:
-	static constexpr int32 MaxTrackedEntities = 10000;
-	static constexpr int32 MaxIdentityHistory = 100000;
+	static constexpr int32 MaxTrackedEntities = 2 * FlecsNetworkLimits::MaxEntityCapacity;
+	static constexpr int32 MaxIdentityHistory = FlecsNetworkLimits::MaxIdentityHistory;
 	static constexpr uint32 MaxTiers = 4;
+
+	/** The optional lower history bound applies to one connection and epoch. */
+	explicit FFlecsPerConnectionScheduler(int32 InIdentityHistoryLimit = MaxIdentityHistory)
+		: IdentityHistoryLimit(FMath::Clamp(InIdentityHistoryLimit, 1, MaxIdentityHistory))
+	{
+	}
 
 	static TArray<FFlecsRelevanceTier> MakeDefaultTiers();
 	bool Select(const FFlecsSpatialIndex& Index, const FFlecsConnectionInterest& Interest, double NowSeconds,
-		const FFlecsRelevanceBudget& Budget, FFlecsRelevanceSelection& OutSelection);
+		const FFlecsRelevanceBudget& Budget, FFlecsRelevanceSelection& OutSelection,
+		uint32 MaxRelevantEntities = 5000, const TMap<FFlecsNetworkEntityKey, double>* BlockedUntil = nullptr);
 	bool CompleteSelection(uint64 SelectionId, bool bHandedToTransport, double HandedAtSeconds);
 	/** Clear per-connection relevance state; epoch and generation history never move backwards. */
 	bool Reset(uint64 NewWorldEpoch = 0);
@@ -75,6 +86,7 @@ private:
 	static double GetTierPeriod(const FFlecsConnectionInterest& Interest, uint8 Tier, float EntityRateCapHz);
 
 	TMap<FFlecsNetworkEntityKey, FTrackedState> Tracked;
+	int32 IdentityHistoryLimit;
 	TMap<uint32, uint16> HighestGenerationByEntityId;
 	TSet<uint32> RetiredEntityIds;
 	TArray<FFlecsScheduledEntity> OutstandingRecords;

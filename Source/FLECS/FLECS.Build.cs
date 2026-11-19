@@ -15,6 +15,9 @@ public class FLECS : ModuleRules
 
 		PublicDependencyModuleNames.AddRange(new string[] {
 			"Core",
+			"CoreUObject",
+			"Engine",
+			"DeveloperSettings",
 			// ... add other public dependencies that you statically link with here ...
 		});
 
@@ -26,9 +29,6 @@ public class FLECS : ModuleRules
 		PrivateDependencyModuleNames.AddRange(new string[] {
 			// Link Flecs into this module only; consumers import its curated exports.
 			"FLECSThirdParty",
-			"CoreUObject",
-			"Engine",
-			"DeveloperSettings",
 			"Slate",
 			"SlateCore",
 			// ... add private dependencies that you statically link with here ...

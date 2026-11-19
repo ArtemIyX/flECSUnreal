@@ -19,10 +19,16 @@ FIntVector FFlecsSpatialIndex::ToCell(const FVector3f& Position, float CellSize)
 		FMath::FloorToInt(Position.Z / CellSize));
 }
 
+uint64 FFlecsSpatialIndex::GetTrackedContainerBytes() const
+{
+	return static_cast<uint64>(Cells.GetAllocatedSize()) + CellArrayBytes;
+}
+
 bool FFlecsSpatialIndex::Build(const FFlecsSpatialSnapshot& InSnapshot, float CellSize)
 {
 	Snapshot = nullptr;
 	Cells.Reset();
+	CellArrayBytes = 0;
 	GridCellSize = 0.0f;
 	if (InSnapshot.WorldEpoch == 0 || InSnapshot.Entities.Num() > MaxEntities || !FMath::IsFinite(CellSize)
 		|| CellSize < MinCellSize)
@@ -45,10 +51,14 @@ bool FFlecsSpatialIndex::Build(const FFlecsSpatialSnapshot& InSnapshot, float Ce
 			|| SeenEntityIds.Contains(Entity.Key.EntityId))
 		{
 			Cells.Reset();
+			CellArrayBytes = 0;
 			return false;
 		}
 		SeenEntityIds.Add(Entity.Key.EntityId);
-		Cells.FindOrAdd(ToCell(Entity.Position, CellSize)).Add(Index);
+		TArray<int32>& Cell = Cells.FindOrAdd(ToCell(Entity.Position, CellSize));
+		const uint64 PreviousBytes = Cell.GetAllocatedSize();
+		Cell.Add(Index);
+		CellArrayBytes += static_cast<uint64>(Cell.GetAllocatedSize()) - PreviousBytes;
 	}
 
 	Snapshot = &InSnapshot;
@@ -182,7 +192,8 @@ double FFlecsPerConnectionScheduler::GetTierPeriod(
 }
 
 bool FFlecsPerConnectionScheduler::Select(const FFlecsSpatialIndex& Index, const FFlecsConnectionInterest& Interest,
-	double NowSeconds, const FFlecsRelevanceBudget& Budget, FFlecsRelevanceSelection& OutSelection)
+	double NowSeconds, const FFlecsRelevanceBudget& Budget, FFlecsRelevanceSelection& OutSelection,
+	uint32 MaxRelevantEntities, const TMap<FFlecsNetworkEntityKey, double>* BlockedUntil)
 {
 	OutSelection = FFlecsRelevanceSelection();
 	if (OutstandingSelectionId != 0)
@@ -198,7 +209,8 @@ bool FFlecsPerConnectionScheduler::Select(const FFlecsSpatialIndex& Index, const
 		|| FMath::Abs(Interest.ViewPosition.X) > MaxInterestDistance * 10.0f
 		|| FMath::Abs(Interest.ViewPosition.Y) > MaxInterestDistance * 10.0f
 		|| FMath::Abs(Interest.ViewPosition.Z) > MaxInterestDistance * 10.0f
-		|| Interest.VisibilityOverrides.Num() > MaxTrackedEntities || Budget.MaxRecords == 0 || Budget.MaxBytes == 0)
+		|| Interest.VisibilityOverrides.Num() > MaxTrackedEntities || Budget.MaxRecords == 0 || Budget.MaxBytes == 0
+		|| MaxRelevantEntities == 0 || MaxRelevantEntities > static_cast<uint32>(MaxTrackedEntities))
 	{
 		return false;
 	}
@@ -227,43 +239,48 @@ bool FFlecsPerConnectionScheduler::Select(const FFlecsSpatialIndex& Index, const
 		return false;
 	}
 
-	TArray<FFlecsNetworkEntityKey> SnapshotLiveKeys;
+	TArray<FFlecsNetworkEntityKey> DerivedLiveKeys;
+	const TArray<FFlecsNetworkEntityKey>* SnapshotLiveKeys = &Snapshot->LiveEntityKeys;
 	if (Snapshot->bHasCompleteLiveEntitySet)
 	{
 		if (Snapshot->LiveEntityKeys.Num() > FFlecsSpatialIndex::MaxEntities)
 		{
 			return false;
 		}
-		SnapshotLiveKeys = Snapshot->LiveEntityKeys;
 	}
 	else
 	{
-		SnapshotLiveKeys.Reserve(Snapshot->Entities.Num());
+		DerivedLiveKeys.Reserve(Snapshot->Entities.Num());
 		for (const FFlecsSpatialEntity& Entity : Snapshot->Entities)
 		{
-			SnapshotLiveKeys.Add(Entity.Key);
+			DerivedLiveKeys.Add(Entity.Key);
 		}
+		SnapshotLiveKeys = &DerivedLiveKeys;
 	}
 
 	TMap<uint32, uint16> SnapshotGenerations;
-	SnapshotGenerations.Reserve(SnapshotLiveKeys.Num());
-	for (const FFlecsNetworkEntityKey& Key : SnapshotLiveKeys)
+	SnapshotGenerations.Reserve(SnapshotLiveKeys->Num());
+	int32 NewHistoryEntries = 0;
+	const int32 ExistingHistoryEntries = bNewEpoch ? 0 : HighestGenerationByEntityId.Num();
+	for (const FFlecsNetworkEntityKey& Key : *SnapshotLiveKeys)
 	{
 		if (!Key.IsValid() || Key.WorldEpoch != Snapshot->WorldEpoch || SnapshotGenerations.Contains(Key.EntityId))
 		{
 			return false;
 		}
 		SnapshotGenerations.Add(Key.EntityId, Key.Generation);
+		const uint16* HighestGeneration = bNewEpoch ? nullptr : HighestGenerationByEntityId.Find(Key.EntityId);
+		if (!HighestGeneration && ++NewHistoryEntries > IdentityHistoryLimit - ExistingHistoryEntries)
+		{
+			OutSelection.Metrics.bIdentityHistoryExhausted = true;
+			UE_LOG(LogTemp, Error, TEXT("Flecs relevance identity history limit reached; rejecting snapshot."));
+			return false;
+		}
 		if (!bNewEpoch)
 		{
-			const uint16* HighestGeneration = HighestGenerationByEntityId.Find(Key.EntityId);
 			if ((HighestGeneration && Key.Generation < *HighestGeneration)
 				|| (HighestGeneration && Key.Generation == *HighestGeneration
 					&& RetiredEntityIds.Contains(Key.EntityId)))
-			{
-				return false;
-			}
-			if (!HighestGeneration && HighestGenerationByEntityId.Num() >= MaxIdentityHistory)
 			{
 				return false;
 			}
@@ -329,13 +346,6 @@ bool FFlecsPerConnectionScheduler::Select(const FFlecsSpatialIndex& Index, const
 			NearbyKeys.Add(Entity.Key);
 		}
 	}
-	TSet<FFlecsNetworkEntityKey> Present;
-	Present.Reserve(SnapshotLiveKeys.Num());
-	for (const FFlecsNetworkEntityKey& Key : SnapshotLiveKeys)
-	{
-		Present.Add(Key);
-	}
-
 	TArray<FCandidate> Candidates;
 	Candidates.Reserve(Nearby.Num() + Tracked.Num());
 	TSet<uint32> PendingPreviousGenerations;
@@ -396,6 +406,12 @@ bool FFlecsPerConnectionScheduler::Select(const FFlecsSpatialIndex& Index, const
 			NowSeconds - Previous->LastSentAtSeconds >= GetTierPeriod(Interest, Tier, Entity->RecommendedUpdateRateHz);
 		if (bEntering || (bChanged && bDue))
 		{
+			const double* RetryAt = BlockedUntil ? BlockedUntil->Find(Entity->Key) : nullptr;
+			if (RetryAt && NowSeconds < *RetryAt)
+			{
+				++OutSelection.Metrics.DeferredByCapacity;
+				continue;
+			}
 			FCandidate& Candidate = Candidates.AddDefaulted_GetRef();
 			Candidate.Record = {Entity->Key,
 				bEntering ? EFlecsRelevanceTransition::Enter : EFlecsRelevanceTransition::Update, Entity->Revision,
@@ -410,7 +426,8 @@ bool FFlecsPerConnectionScheduler::Select(const FFlecsSpatialIndex& Index, const
 
 	for (auto It = Tracked.CreateIterator(); It; ++It)
 	{
-		if (Present.Contains(It.Key()))
+		const uint16* LiveGeneration = SnapshotGenerations.Find(It.Key().EntityId);
+		if (It.Key().WorldEpoch == Snapshot->WorldEpoch && LiveGeneration && *LiveGeneration == It.Key().Generation)
 		{
 			continue;
 		}
@@ -446,8 +463,22 @@ bool FFlecsPerConnectionScheduler::Select(const FFlecsSpatialIndex& Index, const
 	});
 
 	uint32 RemainingBytes = Budget.MaxBytes;
+	uint32 ReservedEntities = 0;
+	for (const TPair<FFlecsNetworkEntityKey, FTrackedState>& Pair : Tracked)
+	{
+		if (Pair.Value.bRelevant)
+			++ReservedEntities;
+	}
 	for (const FCandidate& Candidate : Candidates)
 	{
+		const FTrackedState* ExistingState = Tracked.Find(Candidate.Record.Key);
+		const bool bNewAdmission = Candidate.Record.Transition == EFlecsRelevanceTransition::Enter
+			&& (!ExistingState || !ExistingState->bRelevant);
+		if (bNewAdmission && ReservedEntities >= MaxRelevantEntities)
+		{
+			++OutSelection.Metrics.DeferredByCapacity;
+			continue;
+		}
 		const uint32 RecordBytes = Candidate.Record.Transition == EFlecsRelevanceTransition::Exit
 									 ? ExitRecordBytes
 									 : Candidate.Record.EstimatedBytes;
@@ -468,6 +499,8 @@ bool FFlecsPerConnectionScheduler::Select(const FFlecsSpatialIndex& Index, const
 			continue;
 		}
 		OutSelection.Records.Add(Candidate.Record);
+		if (bNewAdmission)
+			++ReservedEntities;
 		RemainingBytes -= RecordBytes;
 		OutSelection.Metrics.SelectedBytes += RecordBytes;
 	}

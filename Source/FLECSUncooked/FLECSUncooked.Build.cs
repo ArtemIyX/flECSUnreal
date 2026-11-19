@@ -12,7 +12,7 @@ public class FLECSUncooked : ModuleRules
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] { "CoreUObject", "Engine", "FLECS", "FLECSModding",
-			"FLECSNetwork", "NetCore", "Slate", "SlateCore" });
+			"FLECSNetwork", "NetCore", "Slate", "SlateCore", "DeveloperSettings" });
 		PrivateIncludePaths.Add(System.IO.Path.Combine(ModuleDirectory, "..", "FLECS", "Private"));
 		SetupIrisSupport(Target, true);
 	}

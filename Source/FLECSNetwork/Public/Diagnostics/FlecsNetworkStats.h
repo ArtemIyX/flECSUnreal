@@ -24,3 +24,5 @@ DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("Manifest payload bytes received"), STAT_
 	STATGROUP_FlecsNetwork, FLECSNETWORK_API);
 DECLARE_MEMORY_STAT_EXTERN(
 	TEXT("Tracked channel buffers"), STAT_FlecsNetworkBuffers, STATGROUP_FlecsNetwork, FLECSNETWORK_API);
+DECLARE_MEMORY_STAT_EXTERN(TEXT("Spatial snapshot containers (partial)"), STAT_FlecsNetworkSpatialContainers,
+	STATGROUP_FlecsNetwork, FLECSNETWORK_API);

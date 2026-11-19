@@ -780,6 +780,110 @@ bool FWorkerEntityCapacityTest::RunTest(const FString& Parameters)
 			TEXT("Additional entity is rejected at configured capacity"));
 		Expect(Failures, Model.GetEntityCount() == 1, TEXT("Rejected spawn preserves the existing entity"));
 		Model.Shutdown();
+		FWorkerEntityModel LargeModel(Registry, true, MaxEntities);
+		if (LargeModel.Initialize(World, 10, [](uint64, const FString&, uint64, uint32, uint16) { return true; })
+			!= EModelResult::Accepted)
+		{
+			Failures.Add(TEXT("Large model initialization failed"));
+			return Failures;
+		}
+		for (int32 Index = 0; Index < MaxEntities; ++Index)
+		{
+			FNetworkEntityIdentity Identity;
+			if (LargeModel.SpawnAuthoritative(TEXT("test:capacity"), 1, Initial, Identity) != EModelResult::Accepted)
+			{
+				Failures.Add(FString::Printf(TEXT("Large model rejected entity %d"), Index + 1));
+				break;
+			}
+		}
+		Expect(Failures, LargeModel.GetEntityCount() == static_cast<uint32>(MaxEntities),
+			TEXT("Configured capacity supports the 100,000-entity ceiling"));
+		FNetworkEntityIdentity Overflow;
+		Expect(Failures, LargeModel.SpawnAuthoritative(TEXT("test:capacity"), 1, Initial, Overflow)
+			== EModelResult::LimitReached, TEXT("Spawn above 100,000 is rejected"));
+		LargeModel.Shutdown();
+		return Failures;
+	});
+	for (const FString& Failure : Future.Get())
+		AddError(Failure);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FWorkerEntityDeltaCapacityTest, "Flecs.Simulation.DeltaCapacityDeferral",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FWorkerEntityDeltaCapacityTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	TFuture<TArray<FString>> Future = Async(EAsyncExecution::Thread, []() {
+		TArray<FString> Failures;
+		FRegistry Registry;
+		FEntityDefinition Definition;
+		Definition.StableId = TEXT("test:capacity");
+		Definition.MaxInitialStateBytes = 1;
+		Definition.Create = [](uint64 Token) { return Token != 0; };
+		FString Error;
+		if (!Registry.RegisterEntityDefinition(MoveTemp(Definition), Error) || !Registry.Freeze(1, Error))
+		{
+			Failures.Add(FString::Printf(TEXT("Delta capacity fixture registration failed: %s"), *Error));
+			return Failures;
+		}
+		const FCompatibilityResult Compatibility = Registry.CompareRequired(Registry);
+		if (!Compatibility.bCompatible || !Compatibility.SessionMapping.IsValid())
+		{
+			Failures.Add(TEXT("Delta capacity fixture mapping failed"));
+			return Failures;
+		}
+		flecs::world World;
+		FWorkerEntityModel Model(Registry, true, MaxRecordsPerBatch + 1);
+		if (Model.Initialize(World, 9, [](uint64, const FString&, uint64, uint32, uint16) { return true; })
+			!= EModelResult::Accepted)
+		{
+			Failures.Add(TEXT("Delta capacity model initialization failed"));
+			return Failures;
+		}
+		FPeerReplicationContext Peer;
+		Peer.ConnectionToken = 1;
+		TArray<FInitialComponent> Initial;
+		FNetworkEntityIdentity First;
+		for (int32 Index = 0; Index <= MaxRecordsPerBatch; ++Index)
+		{
+			FNetworkEntityIdentity Identity;
+			if (Model.SpawnAuthoritative(TEXT("test:capacity"), 1, Initial, Identity) != EModelResult::Accepted)
+			{
+				Failures.Add(FString::Printf(TEXT("Delta capacity spawn %d failed"), Index));
+				Model.Shutdown();
+				return Failures;
+			}
+			if (Index == 0)
+				First = Identity;
+			Peer.RelevantEntityKeys.Add(FPeerReplicationContext::MakeEntityViewKey(Identity.NetworkEntityId, Identity.Generation));
+		}
+		TArray<FSelectedEntityComponents> Due;
+		FStateBatch Batch;
+		Expect(Failures, Model.BuildAuthoritativeDelta(1, Peer, Compatibility.SessionMapping, Due, Batch)
+			== EModelResult::CapacityDeferred, TEXT("Oversized delta is deferred"));
+		Peer.RelevantEntityKeys.Reset();
+		Peer.RelevantEntityKeys.Add(FPeerReplicationContext::MakeEntityViewKey(First.NetworkEntityId, First.Generation));
+		Expect(Failures, Model.BuildAuthoritativeDelta(2, Peer, Compatibility.SessionMapping, Due, Batch)
+			== EModelResult::Accepted && Batch.Records.Num() == 1,
+			TEXT("Smaller retry succeeds without a partially staged baseline"));
+		Expect(Failures, Model.AcknowledgeAuthoritativeDelta(1, 9, Batch.PublicationRevision) == EModelResult::Accepted,
+			TEXT("Acknowledge the smaller retry"));
+		Expect(Failures, Model.DespawnAuthoritative(First, 3) == EModelResult::Accepted,
+			TEXT("Despawn after spatial capture"));
+		FSelectedEntityComponents Stale;
+		Stale.Identity = First;
+		Due.Add(Stale);
+		Expect(Failures, Model.BuildAuthoritativeDelta(4, Peer, Compatibility.SessionMapping, Due, Batch)
+			== EModelResult::StaleIdentity, TEXT("Stale selection is reported without staging a delta"));
+		Due.Reset();
+		Peer.RelevantEntityKeys.Reset();
+		Expect(Failures, Model.BuildAuthoritativeDelta(5, Peer, Compatibility.SessionMapping, Due, Batch)
+			== EModelResult::Accepted && Batch.Records.Num() == 1
+			&& Batch.Records[0].Operation == EStateOperation::EntityDespawn,
+			TEXT("A newer selection can send the authoritative despawn"));
+		Model.Shutdown();
 		return Failures;
 	});
 	for (const FString& Failure : Future.Get())

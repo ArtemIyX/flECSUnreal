@@ -27,13 +27,18 @@ public:
 
 	/** Maximum authoritative network entities per session. Captured when the session starts. */
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Networking|Limits",
-		meta = (ClampMin = "1", ClampMax = "5000"))
+		meta = (ClampMin = "1", ClampMax = "100000"))
 	int32 MaxNetworkEntities = 5000;
 
 	/** Maximum network entities owned by one peer, also limited by MaxNetworkEntities. */
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Networking|Limits",
-		meta = (ClampMin = "1", ClampMax = "5000"))
+		meta = (ClampMin = "1", ClampMax = "100000"))
 	int32 MaxPeerOwnedEntities = 256;
+
+	/** Maximum entities retained as relevant to one peer; applied on the next session. */
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Networking|Limits",
+		meta = (ClampMin = "1", ClampMax = "100000"))
+	int32 MaxRelevantEntitiesPerPeer = 5000;
 
 	/** Default maximum selected entity records per peer and selection. */
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Networking|Limits",

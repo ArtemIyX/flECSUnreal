@@ -149,7 +149,10 @@ EModelResult FWorkerEntityModel::SpawnAuthoritative(const FString& DefinitionSta
 	else
 	{
 		if (NextNetworkEntityId == 0 || NextGenerationById.Num() >= MaxIdentityHistory)
+		{
+			UE_LOG(LogTemp, Error, TEXT("Flecs network identity history exhausted; rejecting authoritative spawn."));
 			return EModelResult::LimitReached;
+		}
 		EntityId = NextNetworkEntityId++;
 		NextGenerationById.Add(EntityId, Generation);
 	}
@@ -663,7 +666,10 @@ EModelResult FWorkerEntityModel::ApplyRecord(
 		{
 			if (!DespawnTombstonesById.Contains(Record.Identity.NetworkEntityId)
 				&& DespawnTombstonesById.Num() >= MaxIdentityHistory)
+			{
+				UE_LOG(LogTemp, Error, TEXT("Flecs client despawn history exhausted; invalidating the client session."));
 				return EModelResult::LimitReached;
+			}
 			FDespawnTombstone& Tombstone = DespawnTombstonesById.FindOrAdd(Record.Identity.NetworkEntityId);
 			Tombstone.ServerWorldEpoch = Record.Identity.ServerWorldEpoch;
 			Tombstone.Generation = Record.Identity.Generation;
@@ -768,9 +774,13 @@ EModelResult FWorkerEntityModel::CreateClientEntity(
 	const FNetworkEntityIdentity& Identity, const FString& DefinitionStableId, FEntityRecord*& OutRecord)
 {
 	OutRecord = nullptr;
-	if (EntitiesById.Num() >= MaxEntities || Identity.ServerWorldEpoch != ServerWorldEpoch
-		|| Identity.NetworkEntityId == 0 || Identity.Generation == 0
-		|| (!NextGenerationById.Contains(Identity.NetworkEntityId) && NextGenerationById.Num() >= MaxIdentityHistory))
+	if (!NextGenerationById.Contains(Identity.NetworkEntityId) && NextGenerationById.Num() >= MaxIdentityHistory)
+	{
+		UE_LOG(LogTemp, Error, TEXT("Flecs client identity history exhausted; invalidating the client session."));
+		return EModelResult::LimitReached;
+	}
+	if (EntitiesById.Num() >= EntityLimit || Identity.ServerWorldEpoch != ServerWorldEpoch
+		|| Identity.NetworkEntityId == 0 || Identity.Generation == 0)
 		return EModelResult::LimitReached;
 	const FlecsModRegistry::FEntityDefinition* Definition = Registry.FindEntityDefinition(DefinitionStableId);
 	if (!Definition || !Definition->Create)
@@ -835,7 +845,7 @@ EModelResult FWorkerEntityModel::BuildAuthoritativeSnapshot(uint32 SimulationTic
 		return EModelResult::WrongRole;
 	if (!bAuthoritativeSessionUsable)
 		return EModelResult::SessionInvalidated;
-	if (SimulationTick == 0 || PeerContext.ConnectionToken == 0 || PeerContext.RelevantEntityKeys.Num() > MaxEntities
+	if (SimulationTick == 0 || PeerContext.ConnectionToken == 0 || PeerContext.RelevantEntityKeys.Num() > EntityLimit
 		|| !PeerWireMapping.IsValid())
 		return EModelResult::Invalid;
 	FStateBatch Candidate;
@@ -914,8 +924,8 @@ EModelResult FWorkerEntityModel::BuildAuthoritativeDelta(uint32 SimulationTick,
 		return EModelResult::WrongRole;
 	if (!bAuthoritativeSessionUsable)
 		return EModelResult::SessionInvalidated;
-	if (SimulationTick == 0 || PeerContext.ConnectionToken == 0 || PeerContext.RelevantEntityKeys.Num() > MaxEntities
-		|| DueSelection.Num() > MaxEntities || !PeerWireMapping.IsValid())
+	if (SimulationTick == 0 || PeerContext.ConnectionToken == 0 || PeerContext.RelevantEntityKeys.Num() > EntityLimit
+		|| DueSelection.Num() > EntityLimit || !PeerWireMapping.IsValid())
 		return EModelResult::Invalid;
 
 	FPeerDeltaState* ExistingPeerState = PeerDeltaStates.Find(PeerContext.ConnectionToken);
@@ -1002,8 +1012,8 @@ EModelResult FWorkerEntityModel::BuildAuthoritativeDelta(uint32 SimulationTick,
 		OutRecord.Operation = Operation;
 		return true;
 	};
-	auto RecalculatePendingLimits = [&CandidateState]() -> bool {
-		if (CandidateState.PendingEntities.Num() > MaxEntities)
+	auto RecalculatePendingLimits = [this, &CandidateState]() -> bool {
+		if (CandidateState.PendingEntities.Num() > EntityLimit)
 			return false;
 		uint64 Bytes = 0;
 		int32 Components = 0;
@@ -1014,7 +1024,7 @@ EModelResult FWorkerEntityModel::BuildAuthoritativeDelta(uint32 SimulationTick,
 				Bytes += static_cast<uint32>(ComponentPair.Value.Payload.Num());
 		}
 		CandidateState.PendingPayloadBytes = Bytes;
-		return Components <= MaxPeerKnownComponents && Bytes <= MaxBatchBytes;
+		return Components <= MaxPeerKnownComponents && Bytes <= MaxPeerBaselinePayloadBytes;
 	};
 
 	TArray<uint32> SortedBaselineIds;
@@ -1045,7 +1055,7 @@ EModelResult FWorkerEntityModel::BuildAuthoritativeDelta(uint32 SimulationTick,
 				TransitionRecord))
 			return EModelResult::UnknownSchema;
 		if (!AddRecord(MoveTemp(TransitionRecord)))
-			return EModelResult::LimitReached;
+			return EModelResult::CapacityDeferred;
 		CandidateState.PendingEntities.Remove(EntityId);
 		if (bNewGenerationLive)
 			DeferredNewGenerationIds.Add(EntityId);
@@ -1071,7 +1081,7 @@ EModelResult FWorkerEntityModel::BuildAuthoritativeDelta(uint32 SimulationTick,
 			if (!MakeEntityRecord(Entity->Identity, EStateOperation::EntityCreate, CreateRecord))
 				return EModelResult::UnknownSchema;
 			if (!AddRecord(MoveTemp(CreateRecord)))
-				return EModelResult::LimitReached;
+				return EModelResult::CapacityDeferred;
 			FPeerEntityBaseline NewBaseline;
 			NewBaseline.Identity = Entity->Identity;
 			Baseline = &CandidateState.PendingEntities.Add(EntityId, MoveTemp(NewBaseline));
@@ -1107,7 +1117,7 @@ EModelResult FWorkerEntityModel::BuildAuthoritativeDelta(uint32 SimulationTick,
 							FlecsModRegistry::EEntryKind::Component, StableId, RemoveRecord.ComponentWireId))
 						return EModelResult::UnknownSchema;
 					if (!AddRecord(MoveTemp(RemoveRecord)))
-						return EModelResult::LimitReached;
+						return EModelResult::CapacityDeferred;
 					Baseline->Components.Remove(StableId);
 				}
 				continue;
@@ -1135,7 +1145,7 @@ EModelResult FWorkerEntityModel::BuildAuthoritativeDelta(uint32 SimulationTick,
 			NewComponentBaseline.Payload = UpsertRecord.Payload;
 			NewComponentBaseline.SourceSimulationTick = SimulationTick;
 			if (!AddRecord(MoveTemp(UpsertRecord)))
-				return EModelResult::LimitReached;
+				return EModelResult::CapacityDeferred;
 			Baseline->Components.Add(StableId, MoveTemp(NewComponentBaseline));
 		}
 		TArray<FString> BaselineComponentIds;
@@ -1153,12 +1163,12 @@ EModelResult FWorkerEntityModel::BuildAuthoritativeDelta(uint32 SimulationTick,
 					FlecsModRegistry::EEntryKind::Component, StableId, RemoveRecord.ComponentWireId))
 				return EModelResult::UnknownSchema;
 			if (!AddRecord(MoveTemp(RemoveRecord)))
-				return EModelResult::LimitReached;
+				return EModelResult::CapacityDeferred;
 			Baseline->Components.Remove(StableId);
 		}
 	}
 	if (!RecalculatePendingLimits())
-		return EModelResult::LimitReached;
+		return EModelResult::CapacityDeferred;
 
 	if (CandidateBatch.Records.IsEmpty())
 	{
@@ -1166,7 +1176,11 @@ EModelResult FWorkerEntityModel::BuildAuthoritativeDelta(uint32 SimulationTick,
 		return EModelResult::Accepted;
 	}
 	if (NextPublicationRevision == 0 || NextPublicationRevision == MAX_uint64)
-		return EModelResult::LimitReached;
+	{
+		UE_LOG(LogTemp, Error, TEXT("Flecs peer publication revision exhausted; invalidating authoritative session."));
+		bAuthoritativeSessionUsable = false;
+		return EModelResult::SessionInvalidated;
+	}
 	CandidateBatch.PublicationRevision = NextPublicationRevision++;
 	CandidateState.PendingBatch = CandidateBatch;
 	if (!ExistingPeerState)
@@ -1245,7 +1259,7 @@ EModelResult FWorkerEntityModel::BuildSpatialMetadata(uint32 SimulationTick,
 		return EModelResult::SessionInvalidated;
 	if (SimulationTick == 0)
 		return EModelResult::Invalid;
-	if (EntitiesById.Num() > MaxEntities)
+	if (EntitiesById.Num() > EntityLimit)
 		return EModelResult::LimitReached;
 
 	TArray<FSpatialEntityMetadata> Candidate;
@@ -1393,7 +1407,7 @@ EModelResult FWorkerEntityModel::BuildLiveEntityIdentities(TArray<FNetworkEntity
 		return EModelResult::WrongRole;
 	if (!bAuthoritativeSessionUsable)
 		return EModelResult::SessionInvalidated;
-	if (EntitiesById.Num() > MaxEntities)
+	if (EntitiesById.Num() > EntityLimit)
 		return EModelResult::LimitReached;
 
 	TArray<uint32> SortedIds;
@@ -1566,6 +1580,10 @@ void FWorkerEntityModel::RetireEntityId(uint32 NetworkEntityId)
 	if (NextGeneration == MAX_uint16)
 		return;
 	++NextGeneration;
-	ReusableEntityIds.AddUnique(NetworkEntityId);
+	// Only authoritative spawns consume this free list. Each authoritative ID is
+	// retired after its live record is removed, or after a popped spawn fails, so
+	// it can be appended once without scanning the entire list on every despawn.
+	if (bAuthoritative)
+		ReusableEntityIds.Add(NetworkEntityId);
 }
 }

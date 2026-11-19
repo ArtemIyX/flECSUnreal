@@ -59,7 +59,7 @@ public:
 	virtual void BeginPlay() override;
 	virtual void Tick(float DeltaSeconds) override;
 
-	/** Begin the server-to-client manifest exchange. Payload is produced by FManifestDescriptor::Serialize. */
+	/** Begin the server-to-client exchange of a bounded session-manifest envelope. */
 	bool StartManifestHandshake(uint64 ServerWorldEpoch, const TArray<uint8>& LocalDescriptor);
 	/** Client only: report its local comparison and send the bounded local descriptor to the server in ACK-paced windows. */
 	bool SubmitLocalManifestDescriptor(uint64 ServerWorldEpoch, const TArray<uint8>& LocalDescriptor);

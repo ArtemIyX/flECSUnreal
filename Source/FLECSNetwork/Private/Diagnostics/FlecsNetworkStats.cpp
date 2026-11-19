@@ -11,3 +11,4 @@ DEFINE_STAT(STAT_FlecsNetworkCommandReceived);
 DEFINE_STAT(STAT_FlecsNetworkManifestSent);
 DEFINE_STAT(STAT_FlecsNetworkManifestReceived);
 DEFINE_STAT(STAT_FlecsNetworkBuffers);
+DEFINE_STAT(STAT_FlecsNetworkSpatialContainers);
