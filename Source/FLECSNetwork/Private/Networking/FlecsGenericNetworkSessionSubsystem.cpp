@@ -292,6 +292,10 @@ struct FFlecsGenericWorkerBridgeState
 		uint64 SnapshotRevision = 0;
 		uint32 SimulationTick = 0;
 		FlecsSimulation::EModelResult Result = FlecsSimulation::EModelResult::Invalid;
+#if WITH_DEV_AUTOMATION_TESTS
+		FlecsSimulation::FNetworkEntityIdentity InspectedIdentity;
+		TArray<uint8> InspectedBytes;
+#endif
 	};
 	struct FSpawnResult
 	{
@@ -1911,11 +1915,16 @@ void UFlecsNetworkSessionSubsystem::HandleCompleteClientStateBatch(
 	const uint64 LocalEpoch = Session->LocalAttachmentEpoch;
 	const uint64 ServerEpoch = Session->ServerWorldEpoch;
 	const uint64 Incarnation = Session->Incarnation.Value;
+	FString InspectionComponent;
+#if WITH_DEV_AUTOMATION_TESTS
+	InspectionComponent = ClientInspectionComponent;
+#endif
 	const TSharedRef<FFlecsGenericWorkerBridgeState, ESPMode::ThreadSafe> BridgeRef = WorkerBridgeState.ToSharedRef();
 	const EFlecsWorkerCommandResult QueueResult = FlecsSubsystem->SubmitWorkerCommand(LocalEpoch,
-		[BridgeRef, Batch = MoveTemp(Batch), Mapping, LocalEpoch, ServerEpoch, Incarnation, SnapshotRevision, SimulationTick]
+		[BridgeRef, Batch = MoveTemp(Batch), Mapping, LocalEpoch, ServerEpoch, Incarnation, SnapshotRevision, SimulationTick, InspectionComponent]
 		(flecs::world&) mutable
 	{
+		(void)InspectionComponent;
 		FFlecsGenericWorkerBridgeState::FClientApplyResult ApplyResult;
 		ApplyResult.LocalAttachmentEpoch = LocalEpoch;
 		ApplyResult.ServerWorldEpoch = ServerEpoch;
@@ -1930,6 +1939,31 @@ void UFlecsNetworkSessionSubsystem::HandleCompleteClientStateBatch(
 			if (ApplyResult.Result == FlecsSimulation::EModelResult::Accepted)
 			{
 				BridgeRef->LastClientSnapshotRevision = SnapshotRevision;
+#if WITH_DEV_AUTOMATION_TESTS
+				if (!InspectionComponent.IsEmpty())
+				{
+					for (const FlecsSimulation::FStateRecord& Record : Batch.Records)
+					{
+						if (Record.Operation != FlecsSimulation::EStateOperation::ComponentUpsert) continue;
+						FlecsModRegistry::FSessionWireEntry Definition;
+						FlecsModRegistry::FSessionWireEntry Component;
+						if (!Mapping.FindEntryByWireId(Record.DefinitionWireId, Definition) ||
+							Definition.Kind != FlecsModRegistry::EEntryKind::EntityDefinition ||
+							!Mapping.FindEntryByWireId(Record.ComponentWireId, Component) ||
+							Component.Kind != FlecsModRegistry::EEntryKind::Component || Component.StableId != InspectionComponent) continue;
+						FlecsSimulation::FNetworkEntityIdentity Identity = Record.Identity;
+						Identity.DefinitionStableId = Definition.StableId;
+						TArray<uint8> Bytes;
+						if (BridgeRef->Model->InspectComponentBytesForTesting(Identity, InspectionComponent, Bytes) ==
+							FlecsSimulation::EModelResult::Accepted && Bytes.Num() <= 1024)
+						{
+							ApplyResult.InspectedIdentity = MoveTemp(Identity);
+							ApplyResult.InspectedBytes = MoveTemp(Bytes);
+							break;
+						}
+					}
+				}
+#endif
 			}
 		}
 		FScopeLock Lock(&BridgeRef->ResultMutex);
@@ -2005,8 +2039,14 @@ void UFlecsNetworkSessionSubsystem::ProcessClientReplication()
 			RejectPeerManifest(Session.Incarnation, TEXT("Could not acknowledge the successfully applied client batch."));
 			continue;
 		}
+#if WITH_DEV_AUTOMATION_TESTS
+		EmitPeerEvent(Session, EFlecsSessionEventKind::ClientStateApplied,
+			ApplyResult.SnapshotRevision, ApplyResult.SimulationTick, 0, 0, FString(),
+			&ApplyResult.InspectedIdentity, &ApplyResult.InspectedBytes);
+#else
 		EmitPeerEvent(Session, EFlecsSessionEventKind::ClientStateApplied,
 			ApplyResult.SnapshotRevision, ApplyResult.SimulationTick);
+#endif
 	}
 }
 
@@ -2528,7 +2568,8 @@ void UFlecsNetworkSessionSubsystem::CloseSession(
 }
 
 void UFlecsNetworkSessionSubsystem::EmitPeerEvent(const FPeerSession& Session, EFlecsSessionEventKind Kind,
-	uint64 Revision, uint32 SimulationTick, uint32 Sequence, uint8 Result, const FString& Reason)
+	uint64 Revision, uint32 SimulationTick, uint32 Sequence, uint8 Result, const FString& Reason,
+	const FlecsSimulation::FNetworkEntityIdentity* InspectedIdentity, const TArray<uint8>* InspectedBytes)
 {
 	check(IsInGameThread());
 	if (!OnSessionEvent.IsBound()) return;
@@ -2543,8 +2584,23 @@ void UFlecsNetworkSessionSubsystem::EmitPeerEvent(const FPeerSession& Session, E
 	Event.CommandSequence = Sequence;
 	Event.CommandResult = Result;
 	Event.Reason = Reason.Left(512);
+	if (InspectedIdentity && InspectedBytes && InspectedBytes->Num() <= 1024)
+	{
+		Event.InspectedIdentity = *InspectedIdentity;
+		Event.InspectedComponentBytes = *InspectedBytes;
+	}
 	OnSessionEvent.Broadcast(Event);
 }
+
+#if WITH_DEV_AUTOMATION_TESTS
+bool UFlecsNetworkSessionSubsystem::SetClientInspectionComponent(const FString& StableComponentId)
+{
+	check(IsInGameThread());
+	if (bIsClosing || bModRegistryFrozen || !ModRegistry.FindComponent(StableComponentId)) return false;
+	ClientInspectionComponent = StableComponentId;
+	return true;
+}
+#endif
 
 bool UFlecsNetworkSessionSubsystem::RequestChannelRecreation(FConnectionIncarnation Incarnation)
 {

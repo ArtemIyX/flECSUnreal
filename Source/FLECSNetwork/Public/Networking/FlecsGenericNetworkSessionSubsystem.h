@@ -57,6 +57,10 @@ public:
 	FFlecsSessionEventDelegate OnSessionEvent;
 	/** Request same-world server channel replacement on a later tick. */
 	bool RequestChannelRecreation(FConnectionIncarnation Incarnation);
+#if WITH_DEV_AUTOMATION_TESTS
+	/** Opt in to inspecting one registered component on the client worker after batch apply. */
+	bool SetClientInspectionComponent(const FString& StableComponentId);
+#endif
 
 private:
 	struct FPeerSession
@@ -109,7 +113,9 @@ private:
 	void ProcessRequestedChannelRecreations();
 	void EmitPeerEvent(const FPeerSession& Session, EFlecsSessionEventKind Kind,
 		uint64 Revision = 0, uint32 SimulationTick = 0, uint32 Sequence = 0,
-		uint8 Result = 0, const FString& Reason = FString());
+		uint8 Result = 0, const FString& Reason = FString(),
+		const FlecsSimulation::FNetworkEntityIdentity* InspectedIdentity = nullptr,
+		const TArray<uint8>* InspectedBytes = nullptr);
 	void HandleWorldAboutToDetach(UWorld& World);
 	FConnectionIncarnation AllocateIncarnation();
 	FPeerSession* FindSession(FConnectionIncarnation Incarnation);
@@ -137,5 +143,8 @@ private:
 	uint64 PendingClientModelResetIncarnation = 0;
 	uint64 PendingClientModelResetLocalEpoch = 0;
 	TSet<uint64> PendingChannelRecreations;
+#if WITH_DEV_AUTOMATION_TESTS
+	FString ClientInspectionComponent;
+#endif
 	bool bIsClosing = false;
 };
