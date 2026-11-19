@@ -7,6 +7,7 @@ enum class EFlecsSessionEventKind : uint8
 	Compatible,
 	Rejected,
 	PeerSpawnFinished,
+	SharedSpawnFinished,
 	ClientStateApplied,
 	ServerTransferStarted,
 	ServerTransferAcknowledged,

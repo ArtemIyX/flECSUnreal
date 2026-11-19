@@ -355,6 +355,7 @@ struct FFlecsGenericWorkerBridgeState
 	TMap<uint64, FCompletedDelta> CompletedDeltas;
 	TMap<uint64, FClientApplyResult> ClientApplyResults;
 	TMap<uint64, FSpawnResult> SpawnResults;
+	TMap<uint64, FSpawnResult> SharedSpawnResults;
 	TMap<uint64, FDeltaAckResult> DeltaAckResults;
 	TMap<uint64, TMap<uint32, FCommandExecutionResult>> CommandExecutionResults;
 	TSet<uint64> RetiredConnectionIncarnations; // guarded by ResultMutex
@@ -494,6 +495,27 @@ void UFlecsNetworkSessionSubsystem::Tick(float DeltaTime)
 	if (bModRegistrySetupFailed)
 	{
 		return;
+	}
+	if (WorkerBridgeState.IsValid())
+	{
+		TMap<uint64, FFlecsGenericWorkerBridgeState::FSpawnResult> Results;
+		{
+			FScopeLock Lock(&WorkerBridgeState->ResultMutex);
+			Swap(Results, WorkerBridgeState->SharedSpawnResults);
+		}
+		for (const auto& Pair : Results)
+		{
+			PendingSharedSpawns.Remove(Pair.Key);
+			const auto& Result = Pair.Value;
+			if (Result.LocalAttachmentEpoch != LocalAttachmentEpoch || Result.ServerWorldEpoch != ServerWorldEpoch) continue;
+			FFlecsSessionEvent Event;
+			Event.Kind = EFlecsSessionEventKind::SharedSpawnFinished;
+			Event.ServerWorldEpoch = Result.ServerWorldEpoch;
+			Event.SpawnRequestId = Result.RequestId;
+			Event.SpawnResult = Result.Result;
+			Event.SpawnedIdentity = Result.Identity;
+			OnSessionEvent.Broadcast(Event);
+		}
 	}
 	ReconcileConnections();
 	ProcessRequestedChannelRecreations();
@@ -1295,6 +1317,69 @@ bool UFlecsNetworkSessionSubsystem::SetPeerInterestProvider(
 	return true;
 }
 
+bool UFlecsNetworkSessionSubsystem::QueueSharedEntitySpawn(FFlecsPeerSpawnRequest Request,
+	uint64& OutRequestId, FString& OutError)
+{
+	check(IsInGameThread());
+	OutRequestId = 0;
+	UWorld* World = GetWorld();
+	UFlecsGameInstanceSubsystem* Flecs = FlecsGameInstanceSubsystem.Get();
+	if (bIsClosing || !World || World->GetNetMode() == NM_Client || !bModRegistryFrozen ||
+		!Flecs || !WorkerBridgeState.IsValid() || LocalAttachmentEpoch == 0 || ServerWorldEpoch == 0 ||
+		Flecs->GetActiveEpoch() != LocalAttachmentEpoch ||
+		WorkerBridgeState->bAuthoritativeModelFailed.load(std::memory_order_acquire))
+	{
+		OutError = TEXT("The authoritative worker is unavailable.");
+		return false;
+	}
+	if (PendingSharedSpawns.Num() >= 64 || NextSpawnRequestId == MAX_uint64 ||
+		!ModRegistry.FindEntityDefinition(Request.DefinitionStableId) ||
+		Request.InitialComponents.Num() > FlecsSimulation::MaxComponentsPerEntity)
+	{
+		OutError = TEXT("The shared spawn request is invalid or the queue is full.");
+		return false;
+	}
+	uint64 TotalBytes = 0;
+	for (const auto& Component : Request.InitialComponents)
+	{
+		TotalBytes += static_cast<uint32>(Component.Payload.Num());
+		if (Component.Payload.Num() > static_cast<int32>(MaxTransportSchemaPayloadBytes) || TotalBytes > FlecsSimulation::MaxBatchBytes)
+		{
+			OutError = TEXT("The shared spawn payload exceeds the limit.");
+			return false;
+		}
+	}
+	const uint64 RequestId = NextSpawnRequestId + 1;
+	const uint64 LocalEpoch = LocalAttachmentEpoch, ServerEpoch = ServerWorldEpoch;
+	const auto Bridge = WorkerBridgeState.ToSharedRef();
+	const auto Queued = Flecs->SubmitWorkerCommand(LocalEpoch,
+		[Bridge, Request = MoveTemp(Request), RequestId, LocalEpoch, ServerEpoch](flecs::world&) mutable
+		{
+			FFlecsGenericWorkerBridgeState::FSpawnResult Result;
+			Result.RequestId = RequestId;
+			Result.LocalAttachmentEpoch = LocalEpoch;
+			Result.ServerWorldEpoch = ServerEpoch;
+			if (!Bridge->bLifecycleRetired.load(std::memory_order_acquire) && Bridge->LocalAttachmentEpoch == LocalEpoch &&
+				Bridge->ServerWorldEpoch == ServerEpoch && Bridge->Model && Bridge->bModelInitialized)
+			{
+				Result.Result = Bridge->Model->SpawnAuthoritative(Request.DefinitionStableId, 0,
+					TConstArrayView<FlecsSimulation::FInitialComponent>(Request.InitialComponents), Result.Identity);
+			}
+			FScopeLock Lock(&Bridge->ResultMutex);
+			Bridge->SharedSpawnResults.Add(RequestId, MoveTemp(Result));
+		});
+	if (Queued != EFlecsWorkerCommandResult::Accepted)
+	{
+		OutError = TEXT("The shared spawn could not be queued.");
+		return false;
+	}
+	NextSpawnRequestId = RequestId;
+	PendingSharedSpawns.Add(RequestId);
+	OutRequestId = RequestId;
+	OutError.Reset();
+	return true;
+}
+
 bool UFlecsNetworkSessionSubsystem::QueuePeerEntitySpawn(FConnectionIncarnation Incarnation,
 	FFlecsPeerSpawnRequest Request, uint64& OutRequestId, FString& OutError)
 {
@@ -1575,6 +1660,7 @@ bool UFlecsNetworkSessionSubsystem::InstallWorkerIntegration(FString& OutError)
 			BridgeRef->CompletedDeltas.Empty();
 			BridgeRef->ClientApplyResults.Empty();
 			BridgeRef->SpawnResults.Empty();
+			BridgeRef->SharedSpawnResults.Empty();
 			BridgeRef->DeltaAckResults.Empty();
 			BridgeRef->CommandExecutionResults.Empty();
 			BridgeRef->CommandResultOverflowIncarnations.Empty();
@@ -2835,6 +2921,7 @@ void UFlecsNetworkSessionSubsystem::HandleWorldAboutToDetach(UWorld& World)
 	check(IsInGameThread());
 	if (&World == GetWorld())
 	{
+		PendingSharedSpawns.Empty();
 		bIsClosing = true;
 		if (WorkerBridgeState.IsValid())
 		{

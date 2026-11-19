@@ -59,6 +59,8 @@ public:
 	FFlecsSessionEventDelegate OnSessionEvent;
 	/** Request same-world server channel replacement on a later tick. */
 	bool RequestChannelRecreation(FConnectionIncarnation Incarnation);
+	/** Queue an unowned authoritative spawn; SharedSpawnFinished reports completion. */
+	bool QueueSharedEntitySpawn(FFlecsPeerSpawnRequest Request, uint64& OutRequestId, FString& OutError);
 	/** Queue one peer-owned spawn; PeerSpawnFinished reports worker execution, not queue admission. */
 	bool QueuePeerEntitySpawn(FConnectionIncarnation Incarnation, FFlecsPeerSpawnRequest Request,
 		uint64& OutRequestId, FString& OutError);
@@ -136,6 +138,7 @@ private:
 	uint64 ServerWorldEpoch = 0;
 	uint32 SessionProtocolVersion = 0;
 	uint64 NextSpawnRequestId = 0;
+	TSet<uint64> PendingSharedSpawns;
 	FlecsModRegistry::FRegistry ModRegistry;
 	TMap<FString, FFlecsTrustedPermissionRule> TrustedPermissionRules;
 	TMap<FString, FFlecsTrustedSpatialDefinition> TrustedSpatialDefinitions;
