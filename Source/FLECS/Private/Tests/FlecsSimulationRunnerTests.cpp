@@ -101,4 +101,111 @@ bool FFlecsRunnerQueueTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlecsRunnerStartupPublicationTest, "Flecs.Simulation.StartupAndPublication",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlecsRunnerStartupPublicationTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	std::atomic<uint32> StepsObserved{0};
+	std::atomic<uint32> StartupThread{0};
+	std::atomic<bool> bMissingFirstStep{false};
+	const uint32 CallerThread = FPlatformTLS::GetCurrentThreadId();
+	TArray<FFlecsWorkerCommand> Startup;
+	Startup.Add([&](flecs::world& World)
+	{
+		StartupThread.store(FPlatformTLS::GetCurrentThreadId());
+		World.system<>("StartupTest").run([&](flecs::iter&) { ++StepsObserved; });
+	});
+	TArray<FFlecsWorkerDataPublisher> Publishers;
+	Publishers.Add([&](flecs::world&, FFlecsSimulationDataBuilder& Builder)
+	{
+		const uint32 Step = StepsObserved.load();
+		if (Step == 0) bMissingFirstStep.store(true);
+		uint8 Bytes[] = { static_cast<uint8>(Step & 0xff), 42 };
+		Builder.TryAdd(17, MakeArrayView(Bytes));
+		Bytes[1] = 0; // Publication must own a copy, not alias the caller's storage.
+		Builder.TryAdd(0, MakeArrayView(Bytes));
+	});
+	FFlecsSimulationRunner Runner(91);
+	if (!TestTrue(TEXT("Start with startup registration"), Runner.Start(MoveTemp(Startup), MoveTemp(Publishers)))) return false;
+	TestTrue(TEXT("Registration completes before Start returns"), StartupThread.load() != 0);
+	TestTrue(TEXT("Registration runs on worker"), StartupThread.load() != CallerThread);
+	TestTrue(TEXT("Data publication appears"), WaitUntil([&] { return Runner.GetDataPublication().IsValid(); }));
+	auto First = Runner.GetDataPublication();
+	if (!TestTrue(TEXT("Data publication exists"), First.IsValid())) { Runner.StopAndJoin(); return false; }
+	TestFalse(TEXT("Startup system runs before first extraction"), bMissingFirstStep.load());
+	TestEqual(TEXT("Publication carries local attachment epoch"), First->LocalAttachmentEpoch, uint64(91));
+	TestTrue(TEXT("Publication has a simulation tick"), First->SimulationTick > 0);
+	TestEqual(TEXT("Accepted item count"), First->Items.Num(), 1);
+	TestEqual(TEXT("Invalid item counted"), First->RejectedItems, uint32(1));
+	TestEqual(TEXT("Byte count"), First->TotalBytes, uint32(2));
+	if (First->Items.Num() == 1 && First->Items[0].Payload.Num() == 2)
+	{
+		TestEqual(TEXT("Payload copied from caller buffer"), First->Items[0].Payload[1], uint8(42));
+	}
+	else AddError(TEXT("Expected one two-byte payload."));
+	const uint64 FirstTick = First->SimulationTick;
+	const uint8 FirstValue = First->Items.Num() && First->Items[0].Payload.Num() ? First->Items[0].Payload[0] : 0;
+	TestTrue(TEXT("A later publication appears"), WaitUntil([&]
+	{
+		auto Latest = Runner.GetDataPublication();
+		return Latest.IsValid() && Latest->SimulationTick > FirstTick;
+	}));
+	TestEqual(TEXT("Held publication retains its original tick"), First->SimulationTick, FirstTick);
+	if (First->Items.Num() && First->Items[0].Payload.Num())
+	{
+		TestEqual(TEXT("Held publication bytes remain unchanged"), First->Items[0].Payload[0], FirstValue);
+	}
+	Runner.StopAndJoin();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlecsPublicationBoundsTest, "Flecs.Simulation.PublicationBoundsAndEpoch",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FFlecsPublicationBoundsTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FFlecsSimulationDataBuilder Builder;
+	TArray<uint8> TooLarge;
+	TooLarge.SetNumZeroed(FlecsMaxDataPublicationItemBytes + 1);
+	TestTrue(TEXT("Oversized item rejected"), Builder.TryAdd(1, TooLarge) == EFlecsDataPublicationAddResult::ItemTooLarge);
+	TArray<uint8> Chunk;
+	Chunk.SetNumZeroed(FlecsMaxDataPublicationItemBytes);
+	for (uint32 Index = 0; Index < FlecsMaxDataPublicationBytes / FlecsMaxDataPublicationItemBytes; ++Index)
+	{
+		if (Builder.TryAdd(1, Chunk) != EFlecsDataPublicationAddResult::Accepted)
+		{
+			AddError(TEXT("Publication rejected bytes before its declared cap."));
+			break;
+		}
+	}
+	const uint8 One = 1;
+	TestTrue(TEXT("Total byte cap rejects overflow"), Builder.TryAdd(1, MakeArrayView(&One, 1)) == EFlecsDataPublicationAddResult::ByteLimitReached);
+	TestEqual(TEXT("Byte cap is not exceeded"), Builder.GetTotalBytes(), FlecsMaxDataPublicationBytes);
+	FFlecsSimulationDataBuilder ItemBuilder;
+	for (uint32 Index = 0; Index < FlecsMaxDataPublicationItems; ++Index)
+	{
+		if (ItemBuilder.TryAdd(1, TConstArrayView<uint8>()) != EFlecsDataPublicationAddResult::Accepted)
+		{
+			AddError(TEXT("Publication rejected items before its declared cap."));
+			break;
+		}
+	}
+	TestTrue(TEXT("Item cap rejects overflow"), ItemBuilder.TryAdd(1, TConstArrayView<uint8>()) == EFlecsDataPublicationAddResult::ItemLimitReached);
+
+	std::atomic<uint32> Executions{0};
+	FFlecsSimulationRunner Runner(92);
+	Runner.SetPaused(true);
+	if (!TestTrue(TEXT("Start paused session"), Runner.Start())) return false;
+	TestTrue(TEXT("Old local epoch is rejected"), Runner.Submit(91, [&](flecs::world&) { ++Executions; }) == EFlecsWorkerCommandResult::StaleEpoch);
+	TestTrue(TEXT("Current local epoch is accepted"), Runner.Submit(92, [&](flecs::world&) { ++Executions; }) == EFlecsWorkerCommandResult::Accepted);
+	Runner.SetPaused(false);
+	TestTrue(TEXT("Current epoch work runs"), WaitUntil([&] { return Executions.load() > 0; }));
+	Runner.StopAndJoin();
+	TestEqual(TEXT("Stale command never executes"), Executions.load(), uint32(1));
+	return true;
+}
+
 #endif
