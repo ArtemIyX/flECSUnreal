@@ -11,7 +11,7 @@
 #include <mutex>
 
 /** Owns every access to its Flecs world, including construction and destruction. */
-class FFlecsSimulationRunner final : private FRunnable
+class FLECS_API FFlecsSimulationRunner final : private FRunnable
 {
 public:
 	using FWorkerCommand = FFlecsWorkerCommand;
