@@ -804,7 +804,12 @@ void UFlecsNetworkSessionSubsystem::ProcessServerReplication()
 			}
 			FFlecsPeerSpawnRequest SpawnRequest;
 			FString SpawnError;
-			if (!PeerSpawnFactory(SpawnController->GetFocalLocation(), SpawnRequest, SpawnError) ||
+			FFlecsPeerSpawnContext SpawnContext;
+			SpawnContext.Incarnation = Session.Incarnation;
+			SpawnContext.ServerWorldEpoch = Session.ServerWorldEpoch;
+			SpawnContext.Controller = SpawnController;
+			SpawnContext.ViewPosition = SpawnController->GetFocalLocation();
+			if (!PeerSpawnFactory(SpawnContext, SpawnRequest, SpawnError) ||
 				SpawnRequest.DefinitionStableId.IsEmpty())
 			{
 				RejectPeerManifest(Session.Incarnation, SpawnError.IsEmpty() ?
