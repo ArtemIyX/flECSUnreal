@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Relevance/FlecsRelevanceScheduler.h"
 #include "Simulation/FlecsWorkerEntityModel.h"
 
 class APlayerController;
@@ -41,6 +42,10 @@ struct FFlecsPeerSpawnRequest
 using FFlecsPeerSpawnFactory = TFunction<bool(const FFlecsPeerSpawnContext& Context,
 	FFlecsPeerSpawnRequest& OutRequest, FString& OutError)>;
 
+/** Game-thread override of view, tiers, visibility, and bounded work for one peer. */
+using FFlecsPeerInterestProvider = TFunction<bool(const FFlecsPeerSpawnContext& Context,
+	FFlecsConnectionInterest& InOutInterest, FFlecsRelevanceBudget& InOutBudget, FString& OutError)>;
+
 enum class EFlecsTrustedSpatialPolicy : uint8
 {
 	PositionRequired,
@@ -61,6 +66,8 @@ struct FFlecsNetworkSessionRegistrar
 	TFunctionRef<bool(const FString&, FFlecsTrustedPermissionRule, FString&)> RegisterPermission;
 	TFunctionRef<bool(const FString&, EFlecsTrustedSpatialPolicy, FFlecsTrustedPositionAccessor, FString&)> RegisterSpatial;
 	TFunctionRef<bool(FFlecsPeerSpawnFactory, FString&)> SetPeerSpawnFactory;
+	/** Optional setter; configured providers run on the game thread before each selection. */
+	TFunction<bool(FFlecsPeerInterestProvider, FString&)> SetPeerInterestProvider;
 };
 
 /** Called once per world before registry freeze; register only trusted worker-safe callbacks. */

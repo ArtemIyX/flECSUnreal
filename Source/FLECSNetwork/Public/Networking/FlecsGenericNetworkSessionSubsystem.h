@@ -44,6 +44,8 @@ public:
 	                                   FString& OutError);
 	/** Set the optional game-thread initial-entity factory before registry freeze. */
 	bool SetPeerSpawnFactory(FFlecsPeerSpawnFactory Factory, FString& OutError);
+	/** Set an optional per-peer interest and budget provider before registry freeze. */
+	bool SetPeerInterestProvider(FFlecsPeerInterestProvider Provider, FString& OutError);
 	bool RegisterTrustedSpatialDefinition(const FString& DefinitionStableId, EFlecsTrustedSpatialPolicy Policy,
 	                                      FFlecsTrustedPositionAccessor Accessor, FString& OutError);
 	bool FreezeModRegistry(uint32 ProtocolVersion, FString& OutError);
@@ -134,6 +136,7 @@ private:
 	TMap<FString, FFlecsTrustedPermissionRule> TrustedPermissionRules;
 	TMap<FString, FFlecsTrustedSpatialDefinition> TrustedSpatialDefinitions;
 	FFlecsPeerSpawnFactory PeerSpawnFactory;
+	FFlecsPeerInterestProvider PeerInterestProvider;
 	TSharedPtr<FlecsModRegistry::FRegistry, ESPMode::ThreadSafe> FrozenWorkerRegistry;
 	TSharedPtr<FFlecsGenericWorkerBridgeState, ESPMode::ThreadSafe> WorkerBridgeState;
 	TArray<uint8> LocalManifestDescriptorBytes;

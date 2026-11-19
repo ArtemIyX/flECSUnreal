@@ -394,6 +394,10 @@ void UFlecsNetworkSessionSubsystem::Initialize(FSubsystemCollectionBase& Collect
 		return SetPeerSpawnFactory(MoveTemp(Factory), Error);
 	};
 	FFlecsNetworkSessionRegistrar Registrar{ModRegistry, PermissionRegistrar, SpatialRegistrar, SpawnRegistrar};
+	Registrar.SetPeerInterestProvider = [this](FFlecsPeerInterestProvider Provider, FString& Error)
+	{
+		return SetPeerInterestProvider(MoveTemp(Provider), Error);
+	};
 	if (!DefaultSessionConfigurator || !GetWorld() ||
 		!DefaultSessionConfigurator(*GetWorld(), Registrar, ModRegistrationError))
 	{
@@ -1042,6 +1046,24 @@ void UFlecsNetworkSessionSubsystem::ProcessServerReplication()
 		FFlecsRelevanceBudget Budget;
 		Budget.MaxRecords = 128;
 		Budget.MaxBytes = 64 * 1024;
+		if (PeerInterestProvider)
+		{
+			FFlecsPeerSpawnContext Context;
+			Context.Incarnation = Session.Incarnation;
+			Context.ServerWorldEpoch = Session.ServerWorldEpoch;
+			Context.Controller = Controller;
+			Context.ViewPosition = FocalLocation;
+			FString InterestError;
+			if (!PeerInterestProvider(Context, Interest, Budget, InterestError) || Budget.MaxRecords == 0 ||
+				Budget.MaxRecords > static_cast<uint32>(MaxChannelUpdateRecords) || Budget.MaxBytes == 0 || Budget.MaxBytes > MaxChannelUpdatePayloadBytes)
+			{
+				RejectPeerManifest(Session.Incarnation, InterestError.IsEmpty() ?
+					TEXT("The peer interest provider returned an invalid or over-limit budget.") : InterestError.Left(512));
+				continue;
+			}
+			// The game can choose relevance but cannot impersonate another connection.
+			Interest.ConnectionId = Session.Incarnation.Value;
+		}
 		FFlecsRelevanceSelection Selection;
 		if (!Runtime.Scheduler.Select(SpatialIndex, Interest, NowSeconds, Budget, Selection))
 		{
@@ -1209,6 +1231,20 @@ bool UFlecsNetworkSessionSubsystem::SetPeerSpawnFactory(
 		return false;
 	}
 	PeerSpawnFactory = MoveTemp(Factory);
+	OutError.Reset();
+	return true;
+}
+
+bool UFlecsNetworkSessionSubsystem::SetPeerInterestProvider(
+	FFlecsPeerInterestProvider Provider, FString& OutError)
+{
+	check(IsInGameThread());
+	if (bModRegistryFrozen || bIsClosing)
+	{
+		OutError = TEXT("Peer interest configuration is frozen or the session is closing.");
+		return false;
+	}
+	PeerInterestProvider = MoveTemp(Provider);
 	OutError.Reset();
 	return true;
 }
