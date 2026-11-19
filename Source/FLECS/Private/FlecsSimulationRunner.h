@@ -17,7 +17,12 @@ public:
 	using FWorkerCommand = FFlecsWorkerCommand;
 	struct FQueuedCommand
 	{
+		enum class EKind : uint8 { Command, AddPublisher, RemovePublisher, AddLifecycle, RemoveLifecycle } Kind = EKind::Command;
 		FWorkerCommand Callback;
+		FName Name;
+		FFlecsWorkerDataPublisher Publisher;
+		FFlecsWorkerStartupCallback Startup;
+		FFlecsWorkerShutdownCallback Shutdown;
 		double EnqueuedAt = 0.0;
 	};
 	static constexpr uint64 MaxQueuedCommands = 1024;
@@ -30,10 +35,26 @@ public:
 	FFlecsSimulationRunner(const FFlecsSimulationRunner&) = delete;
 	FFlecsSimulationRunner& operator=(const FFlecsSimulationRunner&) = delete;
 
-	bool Start(TArray<FWorkerCommand>&& StartupCommands, TArray<FFlecsWorkerDataPublisher>&& StartupPublishers);
-	bool Start() { return Start(TArray<FWorkerCommand>(), TArray<FFlecsWorkerDataPublisher>()); }
+	bool Start(TArray<FWorkerCommand>&& StartupCommands, TArray<FFlecsNamedWorkerDataPublisher>&& StartupPublishers,
+		TArray<FFlecsNamedWorkerLifecycle>&& StartupLifecycles = {});
+	bool Start(TArray<FWorkerCommand>&& StartupCommands, TArray<FFlecsWorkerDataPublisher>&& StartupPublishers)
+	{
+		TArray<FFlecsNamedWorkerDataPublisher> NamedPublishers;
+		NamedPublishers.Reserve(StartupPublishers.Num());
+		for (int32 Index = 0; Index < StartupPublishers.Num(); ++Index)
+		{
+			NamedPublishers.Add({ FName(*FString::Printf(TEXT("LegacyPublisher_%d"), Index)), MoveTemp(StartupPublishers[Index]) });
+		}
+		return Start(MoveTemp(StartupCommands), MoveTemp(NamedPublishers), TArray<FFlecsNamedWorkerLifecycle>());
+	}
+	bool Start() { return Start(TArray<FWorkerCommand>(), TArray<FFlecsNamedWorkerDataPublisher>(), TArray<FFlecsNamedWorkerLifecycle>()); }
 	void StopAndJoin();
 	EFlecsWorkerCommandResult Submit(uint64 ExpectedEpoch, FWorkerCommand&& Command);
+	EFlecsWorkerCommandResult RegisterPublisher(uint64 ExpectedEpoch, FName Name, FFlecsWorkerDataPublisher&& Publisher);
+	EFlecsWorkerCommandResult UnregisterPublisher(uint64 ExpectedEpoch, FName Name);
+	EFlecsWorkerCommandResult RegisterLifecycle(uint64 ExpectedEpoch, FName Name,
+		FFlecsWorkerStartupCallback&& Startup, FFlecsWorkerShutdownCallback&& Shutdown);
+	EFlecsWorkerCommandResult UnregisterLifecycle(uint64 ExpectedEpoch, FName Name);
 	bool Submit(FWorkerCommand&& Command)
 	{
 		return Submit(Epoch, MoveTemp(Command)) == EFlecsWorkerCommandResult::Accepted;
@@ -49,14 +70,19 @@ private:
 	virtual void Exit() override;
 	void Publish(double StepSeconds);
 	void PublishData(flecs::world& World);
+	uint64 ProcessQueuedWork(flecs::world& World, uint64 MaxItems, bool bShutdownDrain);
+	void ApplyQueuedWork(flecs::world& World, FQueuedCommand&& Work, bool bShutdownDrain);
+	void ShutdownLifecycles(flecs::world& World);
 
 	const uint64 Epoch;
 	FRunnableThread* Thread = nullptr;
 	FEvent* WakeEvent = nullptr;
 	FEvent* InitializedEvent = nullptr;
 	TArray<FWorkerCommand> StartupCommands;
-	TArray<FFlecsWorkerDataPublisher> StartupPublishers;
-	TArray<FFlecsWorkerDataPublisher> DataPublishers;
+	TArray<FFlecsNamedWorkerDataPublisher> StartupPublishers;
+	TArray<FFlecsNamedWorkerLifecycle> StartupLifecycles;
+	TMap<FName, FFlecsWorkerDataPublisher> DataPublishers;
+	TMap<FName, FFlecsWorkerShutdownCallback> ActiveLifecycles;
 	std::atomic<bool> bInitializationSucceeded{ false };
 	std::mutex QueueMutex;
 	std::deque<FQueuedCommand> Commands;

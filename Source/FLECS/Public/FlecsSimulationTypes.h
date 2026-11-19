@@ -123,11 +123,31 @@ private:
  * fixed step. Must not access UObjects or store Flecs references in the DTO. */
 using FFlecsWorkerDataPublisher = std::function<void(flecs::world&, FFlecsSimulationDataBuilder&)>;
 
+/** Paired worker lifecycle callbacks. Both execute on the Flecs owner thread and
+ * receive only that session's world and local Unreal attachment epoch. They must
+ * not capture or access UObjects, actors, or Unreal connection state. */
+using FFlecsWorkerStartupCallback = std::function<void(flecs::world&, uint64 LocalAttachmentEpoch)>;
+using FFlecsWorkerShutdownCallback = std::function<void(flecs::world&, uint64 LocalAttachmentEpoch)>;
+
+struct FFlecsNamedWorkerDataPublisher
+{
+	FName Name;
+	FFlecsWorkerDataPublisher Callback;
+};
+
+struct FFlecsNamedWorkerLifecycle
+{
+	FName Name;
+	FFlecsWorkerStartupCallback Startup;
+	FFlecsWorkerShutdownCallback Shutdown;
+};
+
 enum class EFlecsWorkerCommandResult : uint8
 {
 	Accepted,
 	InvalidCommand,
 	StaleEpoch,
 	QueueFull,
-	Stopping
+	Stopping,
+	RegistryFull
 };

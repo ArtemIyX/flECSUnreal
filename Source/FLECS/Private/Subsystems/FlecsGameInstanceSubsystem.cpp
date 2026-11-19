@@ -57,13 +57,19 @@ bool UFlecsGameInstanceSubsystem::AttachWorld(UWorld& InWorld)
 	{
 		StartupCommands.Add(Entry.Value);
 	}
-	TArray<FFlecsWorkerDataPublisher> StartupPublishers;
+	TArray<FFlecsNamedWorkerDataPublisher> StartupPublishers;
 	StartupPublishers.Reserve(PersistentDataPublishers.Num());
 	for (const TPair<FName, FFlecsWorkerDataPublisher>& Entry : PersistentDataPublishers)
 	{
-		StartupPublishers.Add(Entry.Value);
+		StartupPublishers.Add({ Entry.Key, Entry.Value });
 	}
-	if (!Runner->Start(MoveTemp(StartupCommands), MoveTemp(StartupPublishers)))
+	TArray<FFlecsNamedWorkerLifecycle> StartupLifecycles;
+	StartupLifecycles.Reserve(PersistentWorkerLifecycles.Num());
+	for (const TPair<FName, FFlecsNamedWorkerLifecycle>& Entry : PersistentWorkerLifecycles)
+	{
+		StartupLifecycles.Add(Entry.Value);
+	}
+	if (!Runner->Start(MoveTemp(StartupCommands), MoveTemp(StartupPublishers), MoveTemp(StartupLifecycles)))
 	{
 		UE_LOG(LogTemp, Error, TEXT("FLECS simulation worker failed to initialize; the world will not advance."));
 		Runner.Reset();
@@ -138,24 +144,102 @@ bool UFlecsGameInstanceSubsystem::RegisterPersistentWorkerCommand(FName Name, FF
 	return Result == EFlecsWorkerCommandResult::Accepted;
 }
 
-bool UFlecsGameInstanceSubsystem::RegisterPersistentDataPublisher(
-	FName Name, FFlecsWorkerDataPublisher&& Publisher)
+EFlecsWorkerCommandResult UFlecsGameInstanceSubsystem::RegisterPersistentDataPublisher(
+	uint64 ExpectedEpoch, FName Name, FFlecsWorkerDataPublisher&& Publisher)
 {
 	check(IsInGameThread());
-	if (Name.IsNone() || !Publisher || Runner.IsValid())
+	if (Name.IsNone() || !Publisher)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("Flecs data publishers must be valid and registered before world attachment."));
-		return false;
+		return EFlecsWorkerCommandResult::InvalidCommand;
 	}
+	if (Runner.IsValid() && ExpectedEpoch != Runner->GetEpoch()) return EFlecsWorkerCommandResult::StaleEpoch;
+	if (!Runner.IsValid() && (ExpectedEpoch != 0 || ActiveWorld.IsValid())) return EFlecsWorkerCommandResult::StaleEpoch;
 	if (!PersistentDataPublishers.Contains(Name) &&
 		PersistentDataPublishers.Num() >= static_cast<int32>(FlecsMaxDataPublishers))
 	{
-		UE_LOG(LogTemp, Warning, TEXT("Flecs data publisher registry reached its %u-entry limit."),
-			FlecsMaxDataPublishers);
-		return false;
+		return EFlecsWorkerCommandResult::RegistryFull;
 	}
-	PersistentDataPublishers.Add(Name, MoveTemp(Publisher));
-	return true;
+	if (!Runner.IsValid())
+	{
+		if (ExpectedEpoch != 0 || ActiveWorld.IsValid()) return EFlecsWorkerCommandResult::StaleEpoch;
+		PersistentDataPublishers.Add(Name, MoveTemp(Publisher));
+		return EFlecsWorkerCommandResult::Accepted;
+	}
+	if (!ActiveWorld.IsValid()) return EFlecsWorkerCommandResult::Stopping;
+	FFlecsWorkerDataPublisher PersistentCopy = Publisher;
+	const EFlecsWorkerCommandResult Result = Runner->RegisterPublisher(ExpectedEpoch, Name, MoveTemp(Publisher));
+	if (Result != EFlecsWorkerCommandResult::Accepted) return Result;
+	PersistentDataPublishers.Add(Name, MoveTemp(PersistentCopy));
+	return EFlecsWorkerCommandResult::Accepted;
+}
+
+EFlecsWorkerCommandResult UFlecsGameInstanceSubsystem::UnregisterPersistentDataPublisher(uint64 ExpectedEpoch, FName Name)
+{
+	check(IsInGameThread());
+	if (Name.IsNone()) return EFlecsWorkerCommandResult::InvalidCommand;
+	if (!Runner.IsValid())
+	{
+		if (ExpectedEpoch != 0 || ActiveWorld.IsValid()) return EFlecsWorkerCommandResult::StaleEpoch;
+		PersistentDataPublishers.Remove(Name);
+		return EFlecsWorkerCommandResult::Accepted;
+	}
+	if (!ActiveWorld.IsValid()) return EFlecsWorkerCommandResult::Stopping;
+	const EFlecsWorkerCommandResult Result = Runner->UnregisterPublisher(ExpectedEpoch, Name);
+	if (Result == EFlecsWorkerCommandResult::Accepted) PersistentDataPublishers.Remove(Name);
+	return Result;
+}
+
+EFlecsWorkerCommandResult UFlecsGameInstanceSubsystem::RegisterPersistentWorkerLifecycle(uint64 ExpectedEpoch,
+	FName Name, FFlecsWorkerStartupCallback Startup, FFlecsWorkerShutdownCallback Shutdown)
+{
+	check(IsInGameThread());
+	if (Name.IsNone() || !Startup || !Shutdown) return EFlecsWorkerCommandResult::InvalidCommand;
+	if (Runner.IsValid() && ExpectedEpoch != Runner->GetEpoch()) return EFlecsWorkerCommandResult::StaleEpoch;
+	if (!Runner.IsValid() && (ExpectedEpoch != 0 || ActiveWorld.IsValid())) return EFlecsWorkerCommandResult::StaleEpoch;
+	if (!PersistentWorkerLifecycles.Contains(Name) &&
+		PersistentWorkerLifecycles.Num() >= static_cast<int32>(FFlecsSimulationRunner::MaxPublicationExtractors))
+	{
+		return EFlecsWorkerCommandResult::RegistryFull;
+	}
+	if (!Runner.IsValid())
+	{
+		if (ExpectedEpoch != 0 || ActiveWorld.IsValid()) return EFlecsWorkerCommandResult::StaleEpoch;
+		FFlecsNamedWorkerLifecycle Lifecycle;
+		Lifecycle.Name = Name;
+		Lifecycle.Startup = MoveTemp(Startup);
+		Lifecycle.Shutdown = MoveTemp(Shutdown);
+		PersistentWorkerLifecycles.Add(Name, MoveTemp(Lifecycle));
+		return EFlecsWorkerCommandResult::Accepted;
+	}
+	if (!ActiveWorld.IsValid()) return EFlecsWorkerCommandResult::Stopping;
+	FFlecsWorkerStartupCallback PersistentStartup = Startup;
+	FFlecsWorkerShutdownCallback PersistentShutdown = Shutdown;
+	const EFlecsWorkerCommandResult Result = Runner->RegisterLifecycle(ExpectedEpoch, Name,
+		MoveTemp(Startup), MoveTemp(Shutdown));
+	if (Result != EFlecsWorkerCommandResult::Accepted) return Result;
+	FFlecsNamedWorkerLifecycle Lifecycle;
+	Lifecycle.Name = Name;
+	Lifecycle.Startup = MoveTemp(PersistentStartup);
+	Lifecycle.Shutdown = MoveTemp(PersistentShutdown);
+	PersistentWorkerLifecycles.Add(Name, MoveTemp(Lifecycle));
+	return EFlecsWorkerCommandResult::Accepted;
+}
+
+EFlecsWorkerCommandResult UFlecsGameInstanceSubsystem::UnregisterPersistentWorkerLifecycle(
+	uint64 ExpectedEpoch, FName Name)
+{
+	check(IsInGameThread());
+	if (Name.IsNone()) return EFlecsWorkerCommandResult::InvalidCommand;
+	if (!Runner.IsValid())
+	{
+		if (ExpectedEpoch != 0 || ActiveWorld.IsValid()) return EFlecsWorkerCommandResult::StaleEpoch;
+		PersistentWorkerLifecycles.Remove(Name);
+		return EFlecsWorkerCommandResult::Accepted;
+	}
+	if (!ActiveWorld.IsValid()) return EFlecsWorkerCommandResult::Stopping;
+	const EFlecsWorkerCommandResult Result = Runner->UnregisterLifecycle(ExpectedEpoch, Name);
+	if (Result == EFlecsWorkerCommandResult::Accepted) PersistentWorkerLifecycles.Remove(Name);
+	return Result;
 }
 
 TSharedPtr<const FFlecsSimulationPublication, ESPMode::ThreadSafe> UFlecsGameInstanceSubsystem::GetPublication() const

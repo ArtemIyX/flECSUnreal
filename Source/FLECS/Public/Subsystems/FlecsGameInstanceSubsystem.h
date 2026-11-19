@@ -35,11 +35,21 @@ public:
 	 * and must not capture or access any UObject or Unreal connection state. */
 	EFlecsWorkerCommandResult SubmitWorkerCommand(uint64 ExpectedEpoch, FFlecsWorkerCommand&& Command);
 	bool RegisterPersistentWorkerCommand(FName Name, FFlecsWorkerCommand&& Command);
-	/** Register a bounded DTO extractor before world attachment. It runs on the
-	 * simulation worker after each fixed step; no UObject access is allowed. Each
-	 * publication is capped by FlecsMaxDataPublication* in FlecsSimulationTypes.h;
-	 * at most FlecsMaxDataPublishers extractors can be registered. */
-	bool RegisterPersistentDataPublisher(FName Name, FFlecsWorkerDataPublisher&& Publisher);
+	/** Register or replace a bounded DTO extractor. ExpectedEpoch must be zero
+	 * before attachment, or the active local attachment epoch for a live session.
+	 * Active changes take effect at the next fixed-step boundary. Queue saturation
+	 * leaves the prior registration unchanged. The callback runs on the worker and
+	 * must not access UObjects or connection state. */
+	EFlecsWorkerCommandResult RegisterPersistentDataPublisher(uint64 ExpectedEpoch, FName Name,
+		FFlecsWorkerDataPublisher&& Publisher);
+	/** Remove a publisher at the next step boundary. Zero is valid only before attach;
+	 * active callers must supply their expected local attachment epoch. */
+	EFlecsWorkerCommandResult UnregisterPersistentDataPublisher(uint64 ExpectedEpoch, FName Name);
+	/** Install a paired worker-only lifecycle callback. Startup runs before the first
+	 * progress call; shutdown runs exactly once on the worker before world destruction. */
+	EFlecsWorkerCommandResult RegisterPersistentWorkerLifecycle(uint64 ExpectedEpoch, FName Name,
+		FFlecsWorkerStartupCallback Startup, FFlecsWorkerShutdownCallback Shutdown);
+	EFlecsWorkerCommandResult UnregisterPersistentWorkerLifecycle(uint64 ExpectedEpoch, FName Name);
 	TSharedPtr<const FFlecsSimulationPublication, ESPMode::ThreadSafe> GetPublication() const;
 	TSharedPtr<const FFlecsSimulationDataPublication, ESPMode::ThreadSafe> GetDataPublication() const;
 	void SetSimulationPaused(bool bPaused);
@@ -79,4 +89,5 @@ private:
 	bool bIsShuttingDown = false;
 	TMap<FName, FFlecsWorkerCommand> PersistentWorkerCommands;
 	TMap<FName, FFlecsWorkerDataPublisher> PersistentDataPublishers;
+	TMap<FName, FFlecsNamedWorkerLifecycle> PersistentWorkerLifecycles;
 };
