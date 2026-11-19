@@ -12,8 +12,8 @@ This is an integration plugin only. It provides Unreal-side wiring (module + sub
 ## What This Plugin Is
 
 - A bridge between Unreal Engine and flecs.
-- A `UGameInstanceSubsystem` (`UFlecsGameInstanceSubsystem`) that owns one `flecs::world` per GameInstance.
-- A `UWorldSubsystem` (`UFlecsSubsystem`) bridge that binds the current world and advances Flecs in the configured tick group.
+- A `UGameInstanceSubsystem` (`UFlecsGameInstanceSubsystem`) that owns a worker session for the active Unreal world.
+- A `UWorldSubsystem` (`UFlecsSubsystem`) bridge that attaches and detaches the active world session.
 - Runtime registration and unregistration of flecs systems.
 
 ## Current Support / Constraints
@@ -151,3 +151,25 @@ Path: `Project Settings -> Plugins -> FLECS`
 ## License
 
 [MIT](LICENSE)
+## Simulation ownership
+
+The GameInstance subsystem attaches one simulation session to the active Unreal
+world. Each session runs on a dedicated worker thread, which creates, mutates,
+and destroys its Flecs world. Unreal world attach and detach notifications remain
+on the game thread; detach wakes and joins the worker before its session ends.
+
+The worker advances at a fixed `1/60` second step, independent of Unreal frame
+rate and time dilation. Pause is explicit through `SetSimulationPaused`; queued
+commands still drain while paused. A slow step may cause at most one immediate
+catch-up step; deadlines more than one step behind are skipped and counted. The
+fixed delta is never adjusted. This is a best-effort clock, not a real-time
+guarantee.
+
+Submit bounded commands through `SubmitWorkerCommand`, or register systems via
+the subsystem registration helpers. These callbacks execute on the simulation
+worker. They must not capture or access UObjects, the game thread, or Unreal
+network objects. The queue rejects work after its 1,024-command capacity and
+reports rejection count, depth, and oldest queued-command age in the immutable
+simulation publication. The publication also reports epoch, tick, step time,
+maximum step time, deadline lateness, and missed deadlines. Do not retain Flecs
+entities, iterators, or pointers outside a worker callback.

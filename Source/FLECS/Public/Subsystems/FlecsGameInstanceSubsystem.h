@@ -2,16 +2,15 @@
 
 #include "CoreMinimal.h"
 #include "Subsystems/GameInstanceSubsystem.h"
-#include "Containers/StringConv.h"
 #include "Misc/Build.h"
-#include "FlecsEntityHandle.h"
 
-PRAGMA_DISABLE_UNREACHABLE_CODE_WARNINGS
-#include "flecs.h"
-
+#include "FlecsSimulationTypes.h"
+#include "Containers/StringConv.h"
+#include <string>
 #include "FlecsGameInstanceSubsystem.generated.h"
 
 class UWorld;
+class FFlecsSimulationRunner;
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FFlecsWorldLifecycleEvent, UWorld&);
 
@@ -24,56 +23,52 @@ public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
 
-	flecs::world* GetEcsWorld();
-	const flecs::world* GetEcsWorld() const;
-	flecs::entity GetActiveWorldScope() const;
-	uint64 GetWorldSerial() const { return WorldSerial; }
-
-	FFlecsEntityHandle MakeEntityHandle(ecs_entity_t InEntity) const;
-	bool ResolveEntityHandle(const FFlecsEntityHandle& InHandle, ecs_entity_t& OutEntity) const;
-	bool IsEntityInScope(ecs_entity_t InEntity, flecs::entity InScope) const;
-
 	bool AttachWorld(UWorld& InWorld);
 	void DetachWorld(UWorld& InWorld);
 	bool IsWorldReady(const UWorld& InWorld) const;
-	bool ProgressFromWorld(UWorld& InWorld, float DeltaTime);
+	uint64 GetWorldSerial() const { return WorldSerial; }
+	uint64 GetWorldGeneration() const { return WorldGeneration; }
 	FName MakeWorldSystemName(FName InSystemName) const;
+
+	/** Queue bounded work for the simulation thread. The callback runs on that thread
+	 * and must not capture or access any UObject or Unreal connection state. */
+	bool SubmitWorkerCommand(FFlecsWorkerCommand&& Command);
+	bool RegisterPersistentWorkerCommand(FName Name, FFlecsWorkerCommand&& Command);
+	TSharedPtr<const FFlecsSimulationPublication, ESPMode::ThreadSafe> GetPublication() const;
+	void SetSimulationPaused(bool bPaused);
 
 	FFlecsWorldLifecycleEvent OnWorldAboutToDetach;
 	FFlecsWorldLifecycleEvent OnWorldAttached;
 
 	template <typename... Components, typename FuncType>
-	flecs::entity RegisterPersistentOnUpdateSystem(const FName SystemName, FuncType&& Func)
+	bool RegisterPersistentOnUpdateSystem(const FName SystemName, FuncType&& Func)
 	{
-		if (!EcsWorld.IsValid() || SystemName.IsNone())
+		if (SystemName.IsNone())
 		{
-			return flecs::entity();
+			return false;
 		}
-
-		UnregisterPersistentSystem(SystemName);
-
-		FTCHARToUTF8 convertedName(*SystemName.ToString());
-		flecs::entity systemEntity = EcsWorld->system<Components...>(convertedName.Get())
-			.kind(flecs::OnUpdate)
-			.each(Forward<FuncType>(Func));
-
-		PersistentSystems.Add(SystemName, systemEntity);
-		return systemEntity;
+		FTCHARToUTF8 ConvertedName(*SystemName.ToString());
+		const std::string WorkerName(ConvertedName.Get());
+		return RegisterPersistentWorkerCommand(SystemName, [WorkerName, Callback = Forward<FuncType>(Func)](flecs::world& World) mutable
+		{
+			flecs::entity Existing = World.lookup(WorkerName.c_str());
+			if (Existing.is_alive())
+			{
+				Existing.destruct();
+			}
+			World.system<Components...>(WorkerName.c_str())
+				.kind(flecs::OnUpdate)
+				.each(MoveTemp(Callback));
+		});
 	}
 
-	bool UnregisterPersistentSystem(FName SystemName);
-	bool UnregisterPersistentSystem(flecs::entity SystemEntity);
-
 private:
-	void DestroyActiveWorldScope();
+	void StopRunner();
 
-	TUniquePtr<flecs::world> EcsWorld;
+	TSharedPtr<FFlecsSimulationRunner, ESPMode::ThreadSafe> Runner;
 	TWeakObjectPtr<UWorld> ActiveWorld;
-	flecs::entity ActiveWorldScope;
-	TMap<FName, flecs::entity> PersistentSystems;
-	uint64 LastProgressFrame = MAX_uint64;
 	uint64 WorldGeneration = 0;
 	uint64 WorldSerial = 0;
-	bool bIsProgressing = false;
 	bool bIsShuttingDown = false;
+	TMap<FName, FFlecsWorkerCommand> PersistentWorkerCommands;
 };

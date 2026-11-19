@@ -1,5 +1,6 @@
 #include "Subsystems/FlecsGameInstanceSubsystem.h"
-#include "EcsEntityNames.h"
+#include "FlecsSimulationRunner.h"
+
 #include "Engine/World.h"
 
 #include <atomic>
@@ -7,230 +8,129 @@
 namespace
 {
 	std::atomic<uint64> NextWorldSerial{ 0 };
+	std::atomic<uint64> NextWorldEpoch{ 0 };
 }
 
 void UFlecsGameInstanceSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
 	bIsShuttingDown = false;
-	EcsWorld = MakeUnique<flecs::world>();
 	WorldSerial = ++NextWorldSerial;
 }
 
 void UFlecsGameInstanceSubsystem::Deinitialize()
 {
 	bIsShuttingDown = true;
-	bIsProgressing = false;
+	if (UWorld* World = ActiveWorld.Get())
+	{
+		OnWorldAboutToDetach.Broadcast(*World);
+	}
 	ActiveWorld.Reset();
-	DestroyActiveWorldScope();
-
-	for (TPair<FName, flecs::entity>& pair : PersistentSystems)
-	{
-		if (EcsWorld.IsValid() && EcsWorld->is_alive(pair.Value.id()))
-		{
-			pair.Value.destruct();
-		}
-	}
-	PersistentSystems.Empty();
-	EcsWorld.Reset();
+	StopRunner();
 	WorldSerial = 0;
-
 	Super::Deinitialize();
-}
-
-flecs::world* UFlecsGameInstanceSubsystem::GetEcsWorld()
-{
-	return EcsWorld.Get();
-}
-
-const flecs::world* UFlecsGameInstanceSubsystem::GetEcsWorld() const
-{
-	return EcsWorld.Get();
-}
-
-flecs::entity UFlecsGameInstanceSubsystem::GetActiveWorldScope() const
-{
-	return ActiveWorldScope;
-}
-
-FFlecsEntityHandle UFlecsGameInstanceSubsystem::MakeEntityHandle(ecs_entity_t InEntity) const
-{
-	if (!EcsWorld.IsValid() || !EcsWorld->is_alive(InEntity))
-	{
-		return FFlecsEntityHandle();
-	}
-
-	return FFlecsEntityHandle(static_cast<uint64>(InEntity), WorldSerial);
-}
-
-bool UFlecsGameInstanceSubsystem::ResolveEntityHandle(
-	const FFlecsEntityHandle& InHandle, ecs_entity_t& OutEntity) const
-{
-	if (!EcsWorld.IsValid() || !InHandle.IsValid() || WorldSerial == 0)
-	{
-		return false;
-	}
-
-	const uint64 EntityValue = InHandle.EntityId;
-	if (InHandle.WorldSerial != WorldSerial || EntityValue == 0)
-	{
-		return false;
-	}
-
-	const ecs_entity_t Entity = static_cast<ecs_entity_t>(EntityValue);
-	if (!EcsWorld->is_valid(Entity) || !EcsWorld->is_alive(Entity))
-	{
-		return false;
-	}
-
-	OutEntity = Entity;
-	return true;
-}
-
-bool UFlecsGameInstanceSubsystem::IsEntityInScope(ecs_entity_t InEntity, flecs::entity InScope) const
-{
-	if (!EcsWorld.IsValid() || InScope.world().c_ptr() != EcsWorld->c_ptr() ||
-		!InScope.is_valid() || !EcsWorld->is_valid(InEntity) || !EcsWorld->is_alive(InEntity))
-	{
-		return false;
-	}
-
-	flecs::entity Current(EcsWorld->c_ptr(), InEntity);
-	while (Current.is_valid())
-	{
-		if (Current.id() == InScope.id())
-		{
-			return true;
-		}
-
-		const flecs::entity Parent = Current.parent();
-		if (!Parent.is_valid() || Parent.id() == Current.id())
-		{
-			break;
-		}
-		Current = Parent;
-	}
-
-	return false;
 }
 
 bool UFlecsGameInstanceSubsystem::AttachWorld(UWorld& InWorld)
 {
-	if (bIsShuttingDown || !EcsWorld.IsValid())
+	check(IsInGameThread());
+	if (bIsShuttingDown)
 	{
 		return false;
 	}
-
-	if (ActiveWorld.Get() == &InWorld && ActiveWorldScope.is_valid())
+	if (ActiveWorld.Get() == &InWorld && Runner.IsValid())
 	{
 		return true;
 	}
-
 	if (UWorld* PreviousWorld = ActiveWorld.Get())
 	{
 		OnWorldAboutToDetach.Broadcast(*PreviousWorld);
 	}
-
-	DestroyActiveWorldScope();
+	ActiveWorld.Reset();
+	StopRunner();
 	ActiveWorld = &InWorld;
-	LastProgressFrame = MAX_uint64;
-
-	const FString scopeName = FString::Printf(
-		TEXT("%s_%llu"), UTF8_TO_TCHAR(FLECS::EntityNames::UnrealWorldScopePrefix), ++WorldGeneration);
-	FTCHARToUTF8 convertedName(*scopeName);
-	ActiveWorldScope = EcsWorld->entity(convertedName.Get());
-	if (ActiveWorldScope.is_valid())
+	++WorldGeneration;
+	Runner = MakeShared<FFlecsSimulationRunner, ESPMode::ThreadSafe>(++NextWorldEpoch);
+	if (!Runner->Start())
 	{
-		OnWorldAttached.Broadcast(InWorld);
+		Runner.Reset();
+		ActiveWorld.Reset();
+		return false;
 	}
-	return ActiveWorldScope.is_valid();
+	for (const TPair<FName, FFlecsWorkerCommand>& Entry : PersistentWorkerCommands)
+	{
+		FFlecsWorkerCommand Command = Entry.Value;
+		if (!Runner->Submit(MoveTemp(Command)))
+		{
+			StopRunner();
+			ActiveWorld.Reset();
+			return false;
+		}
+	}
+	OnWorldAttached.Broadcast(InWorld);
+	return true;
 }
 
 void UFlecsGameInstanceSubsystem::DetachWorld(UWorld& InWorld)
 {
+	check(IsInGameThread());
 	if (ActiveWorld.Get() != &InWorld)
 	{
 		return;
 	}
-
 	OnWorldAboutToDetach.Broadcast(InWorld);
 	ActiveWorld.Reset();
-	LastProgressFrame = MAX_uint64;
-	DestroyActiveWorldScope();
+	StopRunner();
 }
 
 bool UFlecsGameInstanceSubsystem::IsWorldReady(const UWorld& InWorld) const
 {
-	return !bIsShuttingDown && !bIsProgressing && EcsWorld.IsValid() &&
-		ActiveWorld.Get() == &InWorld &&
-		ActiveWorldScope.is_valid() && ActiveWorldScope.world().c_ptr() == EcsWorld->c_ptr();
+	check(IsInGameThread());
+	return !bIsShuttingDown && ActiveWorld.Get() == &InWorld && Runner.IsValid();
 }
 
-bool UFlecsGameInstanceSubsystem::ProgressFromWorld(UWorld& InWorld, float DeltaTime)
+bool UFlecsGameInstanceSubsystem::SubmitWorkerCommand(FFlecsWorkerCommand&& Command)
 {
-	if (bIsShuttingDown || bIsProgressing || DeltaTime <= 0.0f || ActiveWorld.Get() != &InWorld || !EcsWorld.IsValid())
+	check(IsInGameThread());
+	return Runner.IsValid() && Runner->Submit(MoveTemp(Command));
+}
+
+bool UFlecsGameInstanceSubsystem::RegisterPersistentWorkerCommand(FName Name, FFlecsWorkerCommand&& Command)
+{
+	check(IsInGameThread());
+	if (Name.IsNone() || !Command)
 	{
 		return false;
 	}
+	PersistentWorkerCommands.Add(Name, Command);
+	return !Runner.IsValid() || Runner->Submit(MoveTemp(Command));
+}
 
-	if (LastProgressFrame == GFrameCounter)
+TSharedPtr<const FFlecsSimulationPublication, ESPMode::ThreadSafe> UFlecsGameInstanceSubsystem::GetPublication() const
+{
+	check(IsInGameThread());
+	return Runner.IsValid() ? Runner->GetPublication() : nullptr;
+}
+
+void UFlecsGameInstanceSubsystem::SetSimulationPaused(bool bPaused)
+{
+	check(IsInGameThread());
+	if (Runner.IsValid())
 	{
-		return false;
+		Runner->SetPaused(bPaused);
 	}
+}
 
-	LastProgressFrame = GFrameCounter;
-	bIsProgressing = true;
-	EcsWorld->progress(static_cast<ecs_ftime_t>(DeltaTime));
-	bIsProgressing = false;
-	return true;
+void UFlecsGameInstanceSubsystem::StopRunner()
+{
+	if (Runner.IsValid())
+	{
+		Runner->StopAndJoin();
+		Runner.Reset();
+	}
 }
 
 FName UFlecsGameInstanceSubsystem::MakeWorldSystemName(FName InSystemName) const
 {
 	return FName(*FString::Printf(TEXT("World_%llu_%s"), WorldGeneration, *InSystemName.ToString()));
-}
-
-bool UFlecsGameInstanceSubsystem::UnregisterPersistentSystem(FName SystemName)
-{
-	flecs::entity* foundSystem = PersistentSystems.Find(SystemName);
-	if (!foundSystem)
-	{
-		return false;
-	}
-
-	if (EcsWorld.IsValid() && EcsWorld->is_alive(foundSystem->id()))
-	{
-		foundSystem->destruct();
-	}
-
-	PersistentSystems.Remove(SystemName);
-	return true;
-}
-
-bool UFlecsGameInstanceSubsystem::UnregisterPersistentSystem(flecs::entity SystemEntity)
-{
-	if (!EcsWorld.IsValid() || !SystemEntity.is_valid() || SystemEntity.world().c_ptr() != EcsWorld->c_ptr())
-	{
-		return false;
-	}
-
-	for (const TPair<FName, flecs::entity>& pair : PersistentSystems)
-	{
-		if (pair.Value == SystemEntity)
-		{
-			return UnregisterPersistentSystem(pair.Key);
-		}
-	}
-
-	return false;
-}
-
-void UFlecsGameInstanceSubsystem::DestroyActiveWorldScope()
-{
-	if (EcsWorld.IsValid() && ActiveWorldScope.is_valid() && EcsWorld->is_alive(ActiveWorldScope.id()))
-	{
-		ActiveWorldScope.destruct();
-	}
-
-	ActiveWorldScope = flecs::entity();
 }
