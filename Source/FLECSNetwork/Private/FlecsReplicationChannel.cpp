@@ -7,87 +7,90 @@
 
 namespace
 {
-	constexpr int32 MaxRecordsPerSnapshot = 16384;
-	constexpr int32 MaxPayloadBytesPerRecord = 1024;
-	constexpr int32 MaxSnapshotPayloadBytes = 4 * 1024 * 1024;
-	constexpr uint32 RecordWireFramingBytes = 45;
-	constexpr uint16 SnapshotWindowRecords = 16;
-	constexpr double SnapshotTransferTimeoutSeconds = 10.0;
-	constexpr int32 MaxCommandPayloadBytes = 1024;
-	constexpr uint16 MaxDiscreteCommandsPerSecond = 20;
-	constexpr uint16 MaxContinuousCommandsPerSecond = 60;
-	constexpr int32 MaxPendingDiscreteCommandResults = 32;
-	constexpr int32 MaxCachedDiscreteCommandResults = 64;
-	constexpr uint32 MaxPastCommandTickWindow = 120;
-	constexpr uint32 MaxFutureCommandTickWindow = 30;
-	constexpr uint32 MaxManifestDescriptorBytes = 1024 * 1024;
-	constexpr uint32 ManifestChunkBytes = 1024;
-	constexpr uint16 ManifestWindowChunks = 16;
-	constexpr uint16 MaxManifestChunks = (MaxManifestDescriptorBytes + ManifestChunkBytes - 1) / ManifestChunkBytes;
-	constexpr double ManifestHandshakeTimeoutSeconds = 10.0;
+constexpr int32 MaxRecordsPerSnapshot = 16384;
+constexpr int32 MaxPayloadBytesPerRecord = 1024;
+constexpr int32 MaxSnapshotPayloadBytes = 4 * 1024 * 1024;
+constexpr uint32 RecordWireFramingBytes = 45;
+constexpr uint16 SnapshotWindowRecords = 16;
+constexpr double SnapshotTransferTimeoutSeconds = 10.0;
+constexpr int32 MaxCommandPayloadBytes = 1024;
+constexpr uint16 MaxDiscreteCommandsPerSecond = 20;
+constexpr uint16 MaxContinuousCommandsPerSecond = 60;
+constexpr int32 MaxPendingDiscreteCommandResults = 32;
+constexpr int32 MaxCachedDiscreteCommandResults = 64;
+constexpr uint32 MaxPastCommandTickWindow = 120;
+constexpr uint32 MaxFutureCommandTickWindow = 30;
+constexpr uint32 MaxManifestDescriptorBytes = 1024 * 1024;
+constexpr uint32 ManifestChunkBytes = 1024;
+constexpr uint16 ManifestWindowChunks = 16;
+constexpr uint16 MaxManifestChunks = (MaxManifestDescriptorBytes + ManifestChunkBytes - 1) / ManifestChunkBytes;
+constexpr double ManifestHandshakeTimeoutSeconds = 10.0;
 
-	struct FRecordKey
+struct FRecordKey
+{
+	uint64 Epoch = 0;
+	uint32 EntityId = 0;
+	uint16 Generation = 0;
+	uint16 ComponentId = 0;
+
+	bool operator==(const FRecordKey& Other) const
 	{
-		uint64 Epoch = 0;
-		uint32 EntityId = 0;
-		uint16 Generation = 0;
-		uint16 ComponentId = 0;
-
-		bool operator==(const FRecordKey& Other) const
-		{
-			return Epoch == Other.Epoch && EntityId == Other.EntityId && Generation == Other.Generation && ComponentId == Other.ComponentId;
-		}
-
-		friend uint32 GetTypeHash(const FRecordKey& Key)
-		{
-			return HashCombine(HashCombine(GetTypeHash(Key.Epoch), GetTypeHash(Key.EntityId)),
-				HashCombine(GetTypeHash(Key.Generation), GetTypeHash(Key.ComponentId)));
-		}
-	};
-
-	FRecordKey MakeKey(const FFlecsReplicationRecord& Record)
-	{
-		return { Record.WorldEpoch, Record.NetworkEntityId, Record.EntityGeneration,
-			(Record.Operation == 2 || Record.Operation == 3 || Record.Operation == 4) ? static_cast<uint16>(0) : Record.ComponentWireId };
+		return Epoch == Other.Epoch && EntityId == Other.EntityId && Generation == Other.Generation
+			&& ComponentId == Other.ComponentId;
 	}
 
-	bool HasSameSnapshotRecord(const FFlecsReplicationRecord& A, const FFlecsReplicationRecord& B)
+	friend uint32 GetTypeHash(const FRecordKey& Key)
 	{
-		return A.WorldEpoch == B.WorldEpoch && A.NetworkEntityId == B.NetworkEntityId &&
-			A.EntityGeneration == B.EntityGeneration && A.DefinitionWireId == B.DefinitionWireId &&
-			A.ComponentWireId == B.ComponentWireId && A.SourceSimulationTick == B.SourceSimulationTick &&
-			A.Operation == B.Operation && A.SnapshotRevision == B.SnapshotRevision &&
-			A.SnapshotTransferId == B.SnapshotTransferId && A.SnapshotRecordIndex == B.SnapshotRecordIndex &&
-			A.SnapshotRecordCount == B.SnapshotRecordCount && A.SnapshotSimulationTick == B.SnapshotSimulationTick &&
-			A.Payload == B.Payload;
+		return HashCombine(HashCombine(GetTypeHash(Key.Epoch), GetTypeHash(Key.EntityId)),
+			HashCombine(GetTypeHash(Key.Generation), GetTypeHash(Key.ComponentId)));
 	}
+};
 
-	bool IsGenerationNewer(uint16 Candidate, uint16 Previous)
-	{
-		// The worker retires an ID permanently at MAX_uint16; generations do
-		// not wrap. A peer can legitimately miss more than half the range.
-		return Candidate > Previous;
-	}
-
-	void CopyState(FFlecsReplicationRecord& Destination, const FFlecsReplicationRecord& Source)
-	{
-		Destination.WorldEpoch = Source.WorldEpoch;
-		Destination.NetworkEntityId = Source.NetworkEntityId;
-		Destination.EntityGeneration = Source.EntityGeneration;
-		Destination.DefinitionWireId = Source.DefinitionWireId;
-		Destination.ComponentWireId = Source.ComponentWireId;
-		Destination.SourceSimulationTick = Source.SourceSimulationTick;
-		Destination.Operation = Source.Operation;
-		Destination.SnapshotRevision = Source.SnapshotRevision;
-		Destination.SnapshotTransferId = Source.SnapshotTransferId;
-		Destination.SnapshotRecordIndex = Source.SnapshotRecordIndex;
-		Destination.SnapshotRecordCount = Source.SnapshotRecordCount;
-		Destination.SnapshotSimulationTick = Source.SnapshotSimulationTick;
-		Destination.Payload = Source.Payload;
-	}
+FRecordKey MakeKey(const FFlecsReplicationRecord& Record)
+{
+	return {Record.WorldEpoch, Record.NetworkEntityId, Record.EntityGeneration,
+		(Record.Operation == 2 || Record.Operation == 3 || Record.Operation == 4) ? static_cast<uint16>(0)
+																				  : Record.ComponentWireId};
 }
 
-void FFlecsReplicationRecordArray::PostReplicatedReceive(const FFastArraySerializer::FPostReplicatedReceiveParameters& Parameters)
+bool HasSameSnapshotRecord(const FFlecsReplicationRecord& A, const FFlecsReplicationRecord& B)
+{
+	return A.WorldEpoch == B.WorldEpoch && A.NetworkEntityId == B.NetworkEntityId
+		&& A.EntityGeneration == B.EntityGeneration && A.DefinitionWireId == B.DefinitionWireId
+		&& A.ComponentWireId == B.ComponentWireId && A.SourceSimulationTick == B.SourceSimulationTick
+		&& A.Operation == B.Operation && A.SnapshotRevision == B.SnapshotRevision
+		&& A.SnapshotTransferId == B.SnapshotTransferId && A.SnapshotRecordIndex == B.SnapshotRecordIndex
+		&& A.SnapshotRecordCount == B.SnapshotRecordCount && A.SnapshotSimulationTick == B.SnapshotSimulationTick
+		&& A.Payload == B.Payload;
+}
+
+bool IsGenerationNewer(uint16 Candidate, uint16 Previous)
+{
+	// The worker retires an ID permanently at MAX_uint16; generations do
+	// not wrap. A peer can legitimately miss more than half the range.
+	return Candidate > Previous;
+}
+
+void CopyState(FFlecsReplicationRecord& Destination, const FFlecsReplicationRecord& Source)
+{
+	Destination.WorldEpoch = Source.WorldEpoch;
+	Destination.NetworkEntityId = Source.NetworkEntityId;
+	Destination.EntityGeneration = Source.EntityGeneration;
+	Destination.DefinitionWireId = Source.DefinitionWireId;
+	Destination.ComponentWireId = Source.ComponentWireId;
+	Destination.SourceSimulationTick = Source.SourceSimulationTick;
+	Destination.Operation = Source.Operation;
+	Destination.SnapshotRevision = Source.SnapshotRevision;
+	Destination.SnapshotTransferId = Source.SnapshotTransferId;
+	Destination.SnapshotRecordIndex = Source.SnapshotRecordIndex;
+	Destination.SnapshotRecordCount = Source.SnapshotRecordCount;
+	Destination.SnapshotSimulationTick = Source.SnapshotSimulationTick;
+	Destination.Payload = Source.Payload;
+}
+}
+
+void FFlecsReplicationRecordArray::PostReplicatedReceive(
+	const FFastArraySerializer::FPostReplicatedReceiveParameters& Parameters)
 {
 	(void)Parameters;
 	if (Owner)
@@ -124,21 +127,26 @@ void AFlecsReplicationChannel::Tick(float DeltaSeconds)
 	{
 		HandleManifestTimeout();
 	}
-	if (OutgoingSnapshotTransfer.bActive && NowSeconds - OutgoingSnapshotTransfer.LastProgressSeconds > SnapshotTransferTimeoutSeconds)
+	if (OutgoingSnapshotTransfer.bActive
+		&& NowSeconds - OutgoingSnapshotTransfer.LastProgressSeconds > SnapshotTransferTimeoutSeconds)
 	{
-		FailSnapshotTransfer(OutgoingSnapshotTransfer.WorldEpoch, TEXT("Snapshot transfer timed out waiting for an Iris window acknowledgement."));
+		FailSnapshotTransfer(OutgoingSnapshotTransfer.WorldEpoch,
+			TEXT("Snapshot transfer timed out waiting for an Iris window acknowledgement."));
 	}
-	if (IncomingSnapshotTransfer.bActive && NowSeconds - IncomingSnapshotTransfer.LastProgressSeconds > SnapshotTransferTimeoutSeconds)
+	if (IncomingSnapshotTransfer.bActive
+		&& NowSeconds - IncomingSnapshotTransfer.LastProgressSeconds > SnapshotTransferTimeoutSeconds)
 	{
-		FailSnapshotTransfer(IncomingSnapshotTransfer.WorldEpoch, TEXT("Snapshot transfer timed out waiting for the worker or next window."));
+		FailSnapshotTransfer(IncomingSnapshotTransfer.WorldEpoch,
+			TEXT("Snapshot transfer timed out waiting for the worker or next window."));
 	}
 }
 
 bool AFlecsReplicationChannel::StartManifestHandshake(uint64 ServerWorldEpoch, const TArray<uint8>& LocalDescriptor)
 {
 	check(IsInGameThread());
-	if (!HasAuthority() || bServerManifestValidated || bManifestHandshakePending || ServerWorldEpoch == 0 || LocalDescriptor.IsEmpty() ||
-		LocalDescriptor.Num() > MaxManifestDescriptorBytes || !IsValid(GetOwner()) || OutgoingSnapshotTransfer.bActive)
+	if (!HasAuthority() || bServerManifestValidated || bManifestHandshakePending || ServerWorldEpoch == 0
+		|| LocalDescriptor.IsEmpty() || LocalDescriptor.Num() > MaxManifestDescriptorBytes || !IsValid(GetOwner())
+		|| OutgoingSnapshotTransfer.bActive)
 	{
 		return false;
 	}
@@ -182,12 +190,13 @@ bool AFlecsReplicationChannel::StartManifestHandshake(uint64 ServerWorldEpoch, c
 	return true;
 }
 
-bool AFlecsReplicationChannel::SubmitLocalManifestDescriptor(uint64 ServerWorldEpoch, const TArray<uint8>& LocalDescriptor)
+bool AFlecsReplicationChannel::SubmitLocalManifestDescriptor(
+	uint64 ServerWorldEpoch, const TArray<uint8>& LocalDescriptor)
 {
 	check(IsInGameThread());
-	if (HasAuthority() || !bManifestHandshakePending || bLocalManifestCompared || ServerWorldEpoch == 0 ||
-		ServerWorldEpoch != HandshakeServerWorldEpoch || LocalDescriptor.IsEmpty() ||
-		LocalDescriptor.Num() > MaxManifestDescriptorBytes)
+	if (HasAuthority() || !bManifestHandshakePending || bLocalManifestCompared || ServerWorldEpoch == 0
+		|| ServerWorldEpoch != HandshakeServerWorldEpoch || LocalDescriptor.IsEmpty()
+		|| LocalDescriptor.Num() > MaxManifestDescriptorBytes)
 	{
 		return false;
 	}
@@ -196,11 +205,12 @@ bool AFlecsReplicationChannel::SubmitLocalManifestDescriptor(uint64 ServerWorldE
 	return true;
 }
 
-bool AFlecsReplicationChannel::CompleteServerManifestHandshake(uint64 ServerWorldEpoch, bool bCompatible, const FString& Reason)
+bool AFlecsReplicationChannel::CompleteServerManifestHandshake(
+	uint64 ServerWorldEpoch, bool bCompatible, const FString& Reason)
 {
 	check(IsInGameThread());
-	if (!HasAuthority() || !bManifestHandshakePending || ServerWorldEpoch == 0 ||
-		ServerWorldEpoch != HandshakeServerWorldEpoch)
+	if (!HasAuthority() || !bManifestHandshakePending || ServerWorldEpoch == 0
+		|| ServerWorldEpoch != HandshakeServerWorldEpoch)
 	{
 		return false;
 	}
@@ -253,7 +263,8 @@ bool AFlecsReplicationChannel::IsManifestHandshakePending(uint64 ServerWorldEpoc
 	return bManifestHandshakePending && HandshakeServerWorldEpoch == ServerWorldEpoch;
 }
 
-bool AFlecsReplicationChannel::ConsumePendingManifestDescriptor(uint64& OutServerWorldEpoch, TArray<uint8>& OutDescriptor)
+bool AFlecsReplicationChannel::ConsumePendingManifestDescriptor(
+	uint64& OutServerWorldEpoch, TArray<uint8>& OutDescriptor)
 {
 	check(IsInGameThread());
 	if (PendingDescriptorEpoch == 0 || PendingManifestDescriptor.IsEmpty())
@@ -266,7 +277,8 @@ bool AFlecsReplicationChannel::ConsumePendingManifestDescriptor(uint64& OutServe
 	return true;
 }
 
-bool AFlecsReplicationChannel::ConsumePendingManifestResult(uint64& OutServerWorldEpoch, bool& bOutCompatible, FString& OutReason)
+bool AFlecsReplicationChannel::ConsumePendingManifestResult(
+	uint64& OutServerWorldEpoch, bool& bOutCompatible, FString& OutReason)
 {
 	check(IsInGameThread());
 	if (!bPendingManifestResult)
@@ -286,7 +298,8 @@ void AFlecsReplicationChannel::SendManifestChunks(uint64 ServerWorldEpoch, const
 	check(IsInGameThread());
 	if (Bytes.IsEmpty() || Bytes.Num() > MaxManifestDescriptorBytes || OutgoingManifest.bActive)
 	{
-		RejectManifestHandshake(ServerWorldEpoch, TEXT("Manifest transfer is invalid or another transfer is still active."));
+		RejectManifestHandshake(
+			ServerWorldEpoch, TEXT("Manifest transfer is invalid or another transfer is still active."));
 		return;
 	}
 	uint32 TransferId = ServerManifestTransferId;
@@ -312,8 +325,9 @@ void AFlecsReplicationChannel::SendManifestChunks(uint64 ServerWorldEpoch, const
 	OutgoingManifest.TransferId = TransferId;
 	OutgoingManifest.ChunkCount = static_cast<uint16>((Bytes.Num() + ManifestChunkBytes - 1) / ManifestChunkBytes);
 	OutgoingManifest.Bytes = Bytes;
-	if (UWorld* World = GetWorld()) if (auto* Diagnostics = World->GetSubsystem<UFlecsNetworkDiagnosticsSubsystem>())
-		Diagnostics->RecordPayload(2, true, Bytes.Num());
+	if (UWorld* World = GetWorld())
+		if (auto* Diagnostics = World->GetSubsystem<UFlecsNetworkDiagnosticsSubsystem>())
+			Diagnostics->RecordPayload(2, true, Bytes.Num());
 	PumpManifestChunkWindow();
 }
 
@@ -324,8 +338,8 @@ void AFlecsReplicationChannel::PumpManifestChunkWindow()
 	{
 		return;
 	}
-	const uint16 WindowEnd = FMath::Min<uint16>(OutgoingManifest.ChunkCount,
-		static_cast<uint16>(OutgoingManifest.NextChunkIndex + ManifestWindowChunks));
+	const uint16 WindowEnd = FMath::Min<uint16>(
+		OutgoingManifest.ChunkCount, static_cast<uint16>(OutgoingManifest.NextChunkIndex + ManifestWindowChunks));
 	OutgoingManifest.AwaitingThroughChunk = WindowEnd - 1;
 	OutgoingManifest.bWaitingForAcknowledgement = true;
 	for (uint16 ChunkIndex = OutgoingManifest.NextChunkIndex; ChunkIndex < WindowEnd; ++ChunkIndex)
@@ -355,9 +369,9 @@ void AFlecsReplicationChannel::HandleManifestChunkAcknowledgement(
 	uint64 ServerWorldEpoch, uint32 TransferId, uint16 HighestContiguousChunk, bool bAccepted)
 {
 	check(IsInGameThread());
-	if (!OutgoingManifest.bActive || !OutgoingManifest.bWaitingForAcknowledgement ||
-		ServerWorldEpoch != OutgoingManifest.WorldEpoch || TransferId != OutgoingManifest.TransferId ||
-		HighestContiguousChunk != OutgoingManifest.AwaitingThroughChunk)
+	if (!OutgoingManifest.bActive || !OutgoingManifest.bWaitingForAcknowledgement
+		|| ServerWorldEpoch != OutgoingManifest.WorldEpoch || TransferId != OutgoingManifest.TransferId
+		|| HighestContiguousChunk != OutgoingManifest.AwaitingThroughChunk)
 	{
 		return;
 	}
@@ -378,8 +392,8 @@ void AFlecsReplicationChannel::HandleManifestChunkAcknowledgement(
 
 void AFlecsReplicationChannel::SendManifestChunkAcknowledgement(const FFlecsManifestChunk& Chunk, bool bToServer)
 {
-	const bool bWindowEnd = ((Chunk.ChunkIndex + 1) % ManifestWindowChunks) == 0 ||
-		Chunk.ChunkIndex + 1 == Chunk.ChunkCount;
+	const bool bWindowEnd =
+		((Chunk.ChunkIndex + 1) % ManifestWindowChunks) == 0 || Chunk.ChunkIndex + 1 == Chunk.ChunkCount;
 	if (!bWindowEnd)
 	{
 		return;
@@ -415,15 +429,16 @@ void AFlecsReplicationChannel::ClientAcknowledgeManifestChunkWindow_Implementati
 	}
 }
 
-bool AFlecsReplicationChannel::ReceiveManifestChunk(const FFlecsManifestChunk& Chunk, TArray<uint8>& OutCompleteDescriptor)
+bool AFlecsReplicationChannel::ReceiveManifestChunk(
+	const FFlecsManifestChunk& Chunk, TArray<uint8>& OutCompleteDescriptor)
 {
 	check(IsInGameThread());
 	OutCompleteDescriptor.Reset();
-	if (!bManifestHandshakePending || PendingDescriptorEpoch != 0 || Chunk.WorldEpoch != HandshakeServerWorldEpoch ||
-		Chunk.TotalBytes == 0 || Chunk.TotalBytes > MaxManifestDescriptorBytes ||
-		!Chunk.Payload.IsValid() || Chunk.Payload.IsEmpty() || Chunk.Payload.Num() > ManifestChunkBytes ||
-		Chunk.ChunkCount == 0 || Chunk.ChunkCount > MaxManifestChunks || Chunk.ChunkIndex >= Chunk.ChunkCount ||
-		Chunk.ChunkCount != (Chunk.TotalBytes + ManifestChunkBytes - 1) / ManifestChunkBytes)
+	if (!bManifestHandshakePending || PendingDescriptorEpoch != 0 || Chunk.WorldEpoch != HandshakeServerWorldEpoch
+		|| Chunk.TotalBytes == 0 || Chunk.TotalBytes > MaxManifestDescriptorBytes || !Chunk.Payload.IsValid()
+		|| Chunk.Payload.IsEmpty() || Chunk.Payload.Num() > ManifestChunkBytes || Chunk.ChunkCount == 0
+		|| Chunk.ChunkCount > MaxManifestChunks || Chunk.ChunkIndex >= Chunk.ChunkCount
+		|| Chunk.ChunkCount != (Chunk.TotalBytes + ManifestChunkBytes - 1) / ManifestChunkBytes)
 	{
 		return false;
 	}
@@ -441,11 +456,12 @@ bool AFlecsReplicationChannel::ReceiveManifestChunk(const FFlecsManifestChunk& C
 		IncomingManifest.ReceivedChunks.Init(false, Chunk.ChunkCount);
 	}
 	const uint32 ExpectedIndex = IncomingManifest.ReceivedBytes / ManifestChunkBytes;
-	if (IncomingManifest.WorldEpoch != Chunk.WorldEpoch || IncomingManifest.TransferId != Chunk.TransferId ||
-		IncomingManifest.TotalBytes != Chunk.TotalBytes || IncomingManifest.ChunkCount != Chunk.ChunkCount ||
-		Chunk.ChunkIndex != ExpectedIndex || IncomingManifest.ReceivedChunks[Chunk.ChunkIndex] ||
-		Chunk.Payload.Num() != FMath::Min<uint32>(ManifestChunkBytes, Chunk.TotalBytes - Chunk.ChunkIndex * ManifestChunkBytes) ||
-		static_cast<uint32>(Chunk.Payload.Num()) > IncomingManifest.TotalBytes - IncomingManifest.ReceivedBytes)
+	if (IncomingManifest.WorldEpoch != Chunk.WorldEpoch || IncomingManifest.TransferId != Chunk.TransferId
+		|| IncomingManifest.TotalBytes != Chunk.TotalBytes || IncomingManifest.ChunkCount != Chunk.ChunkCount
+		|| Chunk.ChunkIndex != ExpectedIndex || IncomingManifest.ReceivedChunks[Chunk.ChunkIndex]
+		|| Chunk.Payload.Num()
+			   != FMath::Min<uint32>(ManifestChunkBytes, Chunk.TotalBytes - Chunk.ChunkIndex * ManifestChunkBytes)
+		|| static_cast<uint32>(Chunk.Payload.Num()) > IncomingManifest.TotalBytes - IncomingManifest.ReceivedBytes)
 	{
 		IncomingManifest = FFlecsManifestAssembly();
 		return false;
@@ -464,8 +480,10 @@ bool AFlecsReplicationChannel::ReceiveManifestChunk(const FFlecsManifestChunk& C
 		OutCompleteDescriptor.Append(Part);
 	}
 	const bool bComplete = OutCompleteDescriptor.Num() == IncomingManifest.TotalBytes;
-	if (bComplete) if (UWorld* World = GetWorld()) if (auto* Diagnostics = World->GetSubsystem<UFlecsNetworkDiagnosticsSubsystem>())
-		Diagnostics->RecordPayload(2, false, OutCompleteDescriptor.Num());
+	if (bComplete)
+		if (UWorld* World = GetWorld())
+			if (auto* Diagnostics = World->GetSubsystem<UFlecsNetworkDiagnosticsSubsystem>())
+				Diagnostics->RecordPayload(2, false, OutCompleteDescriptor.Num());
 	IncomingManifest = FFlecsManifestAssembly();
 	return bComplete;
 }
@@ -504,7 +522,8 @@ void AFlecsReplicationChannel::ClientReceiveManifestChunk_Implementation(const F
 	const bool bValid = ReceiveManifestChunk(Chunk, CompleteDescriptor);
 	if (!bValid)
 	{
-		RejectManifestHandshake(HandshakeServerWorldEpoch, TEXT("Malformed, duplicate, out-of-order, or stale manifest chunk."));
+		RejectManifestHandshake(
+			HandshakeServerWorldEpoch, TEXT("Malformed, duplicate, out-of-order, or stale manifest chunk."));
 		return;
 	}
 	if (!CompleteDescriptor.IsEmpty())
@@ -519,8 +538,8 @@ void AFlecsReplicationChannel::ServerSubmitManifestChunk_Implementation(const FF
 {
 	check(IsInGameThread());
 	const APlayerController* OwningController = Cast<APlayerController>(GetOwner());
-	if (!HasAuthority() || !OwningController || !OwningController->GetNetConnection() ||
-		!bManifestHandshakePending || bServerManifestValidated || Chunk.TransferId != ServerManifestTransferId)
+	if (!HasAuthority() || !OwningController || !OwningController->GetNetConnection() || !bManifestHandshakePending
+		|| bServerManifestValidated || Chunk.TransferId != ServerManifestTransferId)
 	{
 		return;
 	}
@@ -528,7 +547,8 @@ void AFlecsReplicationChannel::ServerSubmitManifestChunk_Implementation(const FF
 	const bool bValid = ReceiveManifestChunk(Chunk, CompleteDescriptor);
 	if (!bValid)
 	{
-		RejectManifestHandshake(HandshakeServerWorldEpoch, TEXT("Malformed, duplicate, out-of-order, or stale manifest chunk."));
+		RejectManifestHandshake(
+			HandshakeServerWorldEpoch, TEXT("Malformed, duplicate, out-of-order, or stale manifest chunk."));
 		return;
 	}
 	if (!CompleteDescriptor.IsEmpty())
@@ -543,35 +563,39 @@ void AFlecsReplicationChannel::ServerRejectManifest_Implementation(uint64 Server
 {
 	check(IsInGameThread());
 	const APlayerController* OwningController = Cast<APlayerController>(GetOwner());
-	if (HasAuthority() && OwningController && OwningController->GetNetConnection() &&
-		ServerWorldEpoch == HandshakeServerWorldEpoch && ReasonCode == 1)
+	if (HasAuthority() && OwningController && OwningController->GetNetConnection()
+		&& ServerWorldEpoch == HandshakeServerWorldEpoch && ReasonCode == 1)
 	{
-		RejectManifestHandshake(ServerWorldEpoch, TEXT("Client rejected the server manifest or received malformed data."));
+		RejectManifestHandshake(
+			ServerWorldEpoch, TEXT("Client rejected the server manifest or received malformed data."));
 	}
 }
 
-void AFlecsReplicationChannel::ClientDiscreteCommandResult_Implementation(uint64 WorldEpoch, uint32 Sequence, uint8 ResultCode)
+void AFlecsReplicationChannel::ClientDiscreteCommandResult_Implementation(
+	uint64 WorldEpoch, uint32 Sequence, uint8 ResultCode)
 {
 	check(IsInGameThread());
-	if (!HasAuthority() && WorldEpoch == HandshakeServerWorldEpoch && Sequence != 0 &&
-		ResultCode <= FlecsNetworkCommandResult::ExecutionResultExpired)
+	if (!HasAuthority() && WorldEpoch == HandshakeServerWorldEpoch && Sequence != 0
+		&& ResultCode <= FlecsNetworkCommandResult::ExecutionResultExpired)
 	{
 		OnDiscreteCommandResultReceived.Broadcast(Sequence, ResultCode);
 	}
 }
 
-void AFlecsReplicationChannel::ClientManifestResult_Implementation(uint64 ServerWorldEpoch, bool bCompatible, const FString& Reason)
+void AFlecsReplicationChannel::ClientManifestResult_Implementation(
+	uint64 ServerWorldEpoch, bool bCompatible, const FString& Reason)
 {
 	check(IsInGameThread());
-	if (HasAuthority() || ServerWorldEpoch == 0 || ServerWorldEpoch != HandshakeServerWorldEpoch ||
-		(!bManifestHandshakePending && (bCompatible || !bClientManifestValidated)))
+	if (HasAuthority() || ServerWorldEpoch == 0 || ServerWorldEpoch != HandshakeServerWorldEpoch
+		|| (!bManifestHandshakePending && (bCompatible || !bClientManifestValidated)))
 	{
 		return;
 	}
 	if (!bCompatible || !bLocalManifestCompared)
 	{
-		const FString FailureReason = bCompatible ? FString(TEXT("Local manifest comparison was not completed.")) :
-			(Reason.IsEmpty() ? FString(TEXT("The server rejected the peer session.")) : Reason);
+		const FString FailureReason =
+			bCompatible ? FString(TEXT("Local manifest comparison was not completed."))
+						: (Reason.IsEmpty() ? FString(TEXT("The server rejected the peer session.")) : Reason);
 		bManifestHandshakePending = false;
 		bClientManifestValidated = false;
 		bClientStateDispatchReady = false;
@@ -618,20 +642,21 @@ void AFlecsReplicationChannel::SetChannelOwner(APlayerController* InOwner)
 	SetOwner(InOwner);
 }
 
-bool AFlecsReplicationChannel::PublishUpdateBatch(uint64 InWorldEpoch, const TArray<FFlecsReplicationRecord>& Records, uint32 InSimulationTick)
+bool AFlecsReplicationChannel::PublishUpdateBatch(
+	uint64 InWorldEpoch, const TArray<FFlecsReplicationRecord>& Records, uint32 InSimulationTick)
 {
 	check(IsInGameThread());
 	LastUpdateBatchRejectionReason.Reset();
-	const auto RejectBatch = [this](const TCHAR* Reason)
-	{
+	const auto RejectBatch = [this](const TCHAR* Reason) {
 		LastUpdateBatchRejectionReason = FString(Reason).Left(256);
 		return false;
 	};
-	if (!HasAuthority() || !bServerManifestValidated || InWorldEpoch == 0 || InWorldEpoch != HandshakeServerWorldEpoch ||
-		OutgoingSnapshotTransfer.bActive || Records.IsEmpty() || Records.Num() > MaxRecordsPerSnapshot ||
-		(CurrentWorldEpoch == InWorldEpoch && CurrentPublishedSnapshotRevision == MAX_uint64))
+	if (!HasAuthority() || !bServerManifestValidated || InWorldEpoch == 0 || InWorldEpoch != HandshakeServerWorldEpoch
+		|| OutgoingSnapshotTransfer.bActive || Records.IsEmpty() || Records.Num() > MaxRecordsPerSnapshot
+		|| (CurrentWorldEpoch == InWorldEpoch && CurrentPublishedSnapshotRevision == MAX_uint64))
 	{
-		return RejectBatch(TEXT("Update batch is not admissible for the current authority, epoch, transfer state, or record limit."));
+		return RejectBatch(
+			TEXT("Update batch is not admissible for the current authority, epoch, transfer state, or record limit."));
 	}
 	const uint64 NewSnapshotRevision = CurrentWorldEpoch == InWorldEpoch ? CurrentPublishedSnapshotRevision + 1 : 1;
 	if (InSimulationTick == 0)
@@ -670,22 +695,24 @@ bool AFlecsReplicationChannel::PublishUpdateBatch(uint64 InWorldEpoch, const TAr
 		}
 		const uint16* ExistingGeneration = EntityGenerations.Find(Record.NetworkEntityId);
 		const uint16* ExistingDefinition = EntityDefinitions.Find(Record.NetworkEntityId);
-		if ((ExistingGeneration && *ExistingGeneration != Record.EntityGeneration) ||
-			(ExistingDefinition && *ExistingDefinition != Record.DefinitionWireId))
+		if ((ExistingGeneration && *ExistingGeneration != Record.EntityGeneration)
+			|| (ExistingDefinition && *ExistingDefinition != Record.DefinitionWireId))
 		{
 			return RejectBatch(TEXT("Update batch contains conflicting identity metadata for an entity."));
 		}
 		EntityGenerations.Add(Record.NetworkEntityId, Record.EntityGeneration);
 		EntityDefinitions.Add(Record.NetworkEntityId, Record.DefinitionWireId);
-		const uint16* PreviousGeneration = CurrentWorldEpoch == InWorldEpoch ? HighestPublishedGenerations.Find(Record.NetworkEntityId) : nullptr;
-		const uint16* PreviousDefinition = CurrentWorldEpoch == InWorldEpoch ? HighestPublishedDefinitions.Find(Record.NetworkEntityId) : nullptr;
-		if (PreviousGeneration && Record.EntityGeneration != *PreviousGeneration &&
-			!IsGenerationNewer(Record.EntityGeneration, *PreviousGeneration))
+		const uint16* PreviousGeneration =
+			CurrentWorldEpoch == InWorldEpoch ? HighestPublishedGenerations.Find(Record.NetworkEntityId) : nullptr;
+		const uint16* PreviousDefinition =
+			CurrentWorldEpoch == InWorldEpoch ? HighestPublishedDefinitions.Find(Record.NetworkEntityId) : nullptr;
+		if (PreviousGeneration && Record.EntityGeneration != *PreviousGeneration
+			&& !IsGenerationNewer(Record.EntityGeneration, *PreviousGeneration))
 		{
 			return RejectBatch(TEXT("Update batch contains a stale entity generation."));
 		}
-		if (PreviousGeneration && Record.EntityGeneration == *PreviousGeneration && PreviousDefinition &&
-			Record.DefinitionWireId != *PreviousDefinition)
+		if (PreviousGeneration && Record.EntityGeneration == *PreviousGeneration && PreviousDefinition
+			&& Record.DefinitionWireId != *PreviousDefinition)
 		{
 			return RejectBatch(TEXT("Update batch changes an entity definition without advancing its generation."));
 		}
@@ -745,8 +772,8 @@ bool AFlecsReplicationChannel::PublishUpdateBatch(uint64 InWorldEpoch, const TAr
 	CurrentPublishedSnapshotRevision = NewSnapshotRevision;
 	CurrentSimulationTick = FMath::Max(CurrentSimulationTick, InSimulationTick);
 	LastPublishedStateSimulationTick = InSimulationTick;
-	if (ReplicatedServerTickHeartbeat.ServerWorldEpoch != InWorldEpoch ||
-		InSimulationTick > ReplicatedServerTickHeartbeat.SimulationTick)
+	if (ReplicatedServerTickHeartbeat.ServerWorldEpoch != InWorldEpoch
+		|| InSimulationTick > ReplicatedServerTickHeartbeat.SimulationTick)
 	{
 		ReplicatedServerTickHeartbeat.ServerWorldEpoch = InWorldEpoch;
 		ReplicatedServerTickHeartbeat.SimulationTick = InSimulationTick;
@@ -780,12 +807,15 @@ bool AFlecsReplicationChannel::PublishUpdateBatch(uint64 InWorldEpoch, const TAr
 
 uint64 AFlecsReplicationChannel::GetDiagnosticsAllocatedBytes() const
 {
- uint64 Bytes = OutgoingManifest.Bytes.GetAllocatedSize() + OutgoingSnapshotTransfer.Records.GetAllocatedSize() +
-  IncomingSnapshotTransfer.Records.GetAllocatedSize() + IncomingSnapshotTransfer.ReceivedIndices.GetAllocatedSize() +
-  IncomingManifest.Chunks.GetAllocatedSize() + IncomingManifest.ReceivedChunks.GetAllocatedSize() +
-  PendingManifestDescriptor.GetAllocatedSize() + ReplicatedState.Items.GetAllocatedSize() + DiagnosticLastAcceptedState.Records.GetAllocatedSize();
- for (const TArray<uint8>& Chunk : IncomingManifest.Chunks) Bytes += Chunk.GetAllocatedSize();
- return Bytes;
+	uint64 Bytes = OutgoingManifest.Bytes.GetAllocatedSize() + OutgoingSnapshotTransfer.Records.GetAllocatedSize()
+				 + IncomingSnapshotTransfer.Records.GetAllocatedSize()
+				 + IncomingSnapshotTransfer.ReceivedIndices.GetAllocatedSize()
+				 + IncomingManifest.Chunks.GetAllocatedSize() + IncomingManifest.ReceivedChunks.GetAllocatedSize()
+				 + PendingManifestDescriptor.GetAllocatedSize() + ReplicatedState.Items.GetAllocatedSize()
+				 + DiagnosticLastAcceptedState.Records.GetAllocatedSize();
+	for (const TArray<uint8>& Chunk : IncomingManifest.Chunks)
+		Bytes += Chunk.GetAllocatedSize();
+	return Bytes;
 }
 
 FString AFlecsReplicationChannel::GetLastUpdateBatchRejectionReason() const
@@ -799,20 +829,22 @@ bool AFlecsReplicationChannel::IsUpdateBatchTransferActive() const
 	return HasAuthority() && OutgoingSnapshotTransfer.bActive;
 }
 
-bool AFlecsReplicationChannel::CompleteReceivedSnapshotBatch(uint64 InWorldEpoch, uint64 InSnapshotRevision, bool bAccepted)
+bool AFlecsReplicationChannel::CompleteReceivedSnapshotBatch(
+	uint64 InWorldEpoch, uint64 InSnapshotRevision, bool bAccepted)
 {
 	check(IsInGameThread());
-	if (HasAuthority() || !IncomingSnapshotTransfer.bActive || !IncomingSnapshotTransfer.bWaitingForWorker ||
-		IncomingSnapshotTransfer.WorldEpoch != InWorldEpoch || IncomingSnapshotTransfer.Revision != InSnapshotRevision)
+	if (HasAuthority() || !IncomingSnapshotTransfer.bActive || !IncomingSnapshotTransfer.bWaitingForWorker
+		|| IncomingSnapshotTransfer.WorldEpoch != InWorldEpoch
+		|| IncomingSnapshotTransfer.Revision != InSnapshotRevision)
 	{
 		return false;
 	}
 	const uint16 FinalRecordIndex = static_cast<uint16>(IncomingSnapshotTransfer.RecordCount - 1);
 	if (bAccepted)
 	{
-		if (LastReceivedSnapshotEpoch == InWorldEpoch &&
-			(InSnapshotRevision <= LastReceivedSnapshotRevision ||
-				IncomingSnapshotTransfer.SimulationTick < LastReceivedStateSimulationTick))
+		if (LastReceivedSnapshotEpoch == InWorldEpoch
+			&& (InSnapshotRevision <= LastReceivedSnapshotRevision
+				|| IncomingSnapshotTransfer.SimulationTick < LastReceivedStateSimulationTick))
 		{
 			bAccepted = false;
 		}
@@ -827,8 +859,8 @@ bool AFlecsReplicationChannel::CompleteReceivedSnapshotBatch(uint64 InWorldEpoch
 			{
 				const uint16* PreviousGeneration = HighestReceivedGenerations.Find(Record.NetworkEntityId);
 				const uint16* PreviousDefinition = HighestReceivedDefinitions.Find(Record.NetworkEntityId);
-				if (!PreviousGeneration || Record.EntityGeneration == *PreviousGeneration ||
-					IsGenerationNewer(Record.EntityGeneration, *PreviousGeneration))
+				if (!PreviousGeneration || Record.EntityGeneration == *PreviousGeneration
+					|| IsGenerationNewer(Record.EntityGeneration, *PreviousGeneration))
 				{
 					HighestReceivedGenerations.Add(Record.NetworkEntityId, Record.EntityGeneration);
 					HighestReceivedDefinitions.Add(Record.NetworkEntityId, Record.DefinitionWireId);
@@ -841,12 +873,16 @@ bool AFlecsReplicationChannel::CompleteReceivedSnapshotBatch(uint64 InWorldEpoch
 			CurrentSimulationTick = FMath::Max(CurrentSimulationTick, IncomingSnapshotTransfer.SimulationTick);
 		}
 	}
-	if (bAccepted && DiagnosticLastAcceptedState.Accept(InWorldEpoch, IncomingSnapshotTransfer.SimulationTick, IncomingSnapshotTransfer.Records))
+	if (bAccepted
+		&& DiagnosticLastAcceptedState.Accept(
+			InWorldEpoch, IncomingSnapshotTransfer.SimulationTick, IncomingSnapshotTransfer.Records))
 	{
-		if (UWorld* World = GetWorld()) if (auto* Diagnostics = World->GetSubsystem<UFlecsNetworkDiagnosticsSubsystem>())
-			Diagnostics->RecordPayload(0, false, IncomingSnapshotTransfer.ReceivedPayloadBytes);
+		if (UWorld* World = GetWorld())
+			if (auto* Diagnostics = World->GetSubsystem<UFlecsNetworkDiagnosticsSubsystem>())
+				Diagnostics->RecordPayload(0, false, IncomingSnapshotTransfer.ReceivedPayloadBytes);
 	}
-	SendSnapshotWindowAcknowledgement(InWorldEpoch, IncomingSnapshotTransfer.TransferId, InSnapshotRevision, FinalRecordIndex, bAccepted);
+	SendSnapshotWindowAcknowledgement(
+		InWorldEpoch, IncomingSnapshotTransfer.TransferId, InSnapshotRevision, FinalRecordIndex, bAccepted);
 	IncomingSnapshotTransfer = FIncomingSnapshotTransfer();
 	return true;
 }
@@ -859,8 +895,8 @@ void AFlecsReplicationChannel::PumpSnapshotWindow()
 		return;
 	}
 	const uint16 WindowStart = OutgoingSnapshotTransfer.NextRecordIndex;
-	const uint16 WindowEnd = static_cast<uint16>(FMath::Min<int32>(OutgoingSnapshotTransfer.RecordCount,
-		static_cast<int32>(WindowStart) + SnapshotWindowRecords));
+	const uint16 WindowEnd = static_cast<uint16>(FMath::Min<int32>(
+		OutgoingSnapshotTransfer.RecordCount, static_cast<int32>(WindowStart) + SnapshotWindowRecords));
 	if (WindowStart >= WindowEnd)
 	{
 		FailSnapshotTransfer(OutgoingSnapshotTransfer.WorldEpoch, TEXT("Snapshot window range is invalid."));
@@ -884,14 +920,14 @@ void AFlecsReplicationChannel::PumpSnapshotWindow()
 	ForceNetUpdate();
 }
 
-void AFlecsReplicationChannel::HandleSnapshotWindowAcknowledgement(uint64 ServerWorldEpoch, uint32 TransferId,
-	uint64 SnapshotRevision, uint16 HighestRecordIndex, bool bAccepted)
+void AFlecsReplicationChannel::HandleSnapshotWindowAcknowledgement(
+	uint64 ServerWorldEpoch, uint32 TransferId, uint64 SnapshotRevision, uint16 HighestRecordIndex, bool bAccepted)
 {
 	check(IsInGameThread());
-	if (!OutgoingSnapshotTransfer.bActive || !OutgoingSnapshotTransfer.bWaitingForAcknowledgement ||
-		ServerWorldEpoch != OutgoingSnapshotTransfer.WorldEpoch || TransferId != OutgoingSnapshotTransfer.TransferId ||
-		SnapshotRevision != OutgoingSnapshotTransfer.Revision ||
-		HighestRecordIndex != OutgoingSnapshotTransfer.AwaitingThroughRecordIndex)
+	if (!OutgoingSnapshotTransfer.bActive || !OutgoingSnapshotTransfer.bWaitingForAcknowledgement
+		|| ServerWorldEpoch != OutgoingSnapshotTransfer.WorldEpoch || TransferId != OutgoingSnapshotTransfer.TransferId
+		|| SnapshotRevision != OutgoingSnapshotTransfer.Revision
+		|| HighestRecordIndex != OutgoingSnapshotTransfer.AwaitingThroughRecordIndex)
 	{
 		return;
 	}
@@ -918,8 +954,8 @@ void AFlecsReplicationChannel::HandleSnapshotWindowAcknowledgement(uint64 Server
 	PumpSnapshotWindow();
 }
 
-void AFlecsReplicationChannel::SendSnapshotWindowAcknowledgement(uint64 ServerWorldEpoch, uint32 TransferId,
-	uint64 SnapshotRevision, uint16 HighestRecordIndex, bool bAccepted)
+void AFlecsReplicationChannel::SendSnapshotWindowAcknowledgement(
+	uint64 ServerWorldEpoch, uint32 TransferId, uint64 SnapshotRevision, uint16 HighestRecordIndex, bool bAccepted)
 {
 	check(IsInGameThread());
 	if (!HasAuthority() && ServerWorldEpoch != 0 && TransferId != 0 && SnapshotRevision != 0)
@@ -969,17 +1005,18 @@ void AFlecsReplicationChannel::FailSnapshotTransfer(uint64 ServerWorldEpoch, con
 void AFlecsReplicationChannel::HandleReplicatedSnapshot()
 {
 	check(IsInGameThread());
-	if (HasAuthority() || !bClientManifestValidated || !bClientStateDispatchReady || ReplicatedState.Items.Num() > SnapshotWindowRecords * 2)
+	if (HasAuthority() || !bClientManifestValidated || !bClientStateDispatchReady
+		|| ReplicatedState.Items.Num() > SnapshotWindowRecords * 2)
 	{
 		return;
 	}
 	const double NowSeconds = FPlatformTime::Seconds();
 	for (const FFlecsReplicationRecord& Record : ReplicatedState.Items)
 	{
-		if (Record.WorldEpoch == 0 || Record.WorldEpoch != HandshakeServerWorldEpoch ||
-			Record.SnapshotRevision == 0 || Record.SnapshotTransferId == 0 || Record.SnapshotRecordCount == 0 ||
-			Record.SnapshotRecordCount > static_cast<uint16>(MaxRecordsPerSnapshot) ||
-			Record.SnapshotRecordIndex >= Record.SnapshotRecordCount || Record.SnapshotSimulationTick == 0)
+		if (Record.WorldEpoch == 0 || Record.WorldEpoch != HandshakeServerWorldEpoch || Record.SnapshotRevision == 0
+			|| Record.SnapshotTransferId == 0 || Record.SnapshotRecordCount == 0
+			|| Record.SnapshotRecordCount > static_cast<uint16>(MaxRecordsPerSnapshot)
+			|| Record.SnapshotRecordIndex >= Record.SnapshotRecordCount || Record.SnapshotSimulationTick == 0)
 		{
 			continue;
 		}
@@ -987,7 +1024,8 @@ void AFlecsReplicationChannel::HandleReplicatedSnapshot()
 		{
 			continue;
 		}
-		if (LastReceivedSnapshotEpoch == Record.WorldEpoch && Record.SnapshotSimulationTick < LastReceivedStateSimulationTick)
+		if (LastReceivedSnapshotEpoch == Record.WorldEpoch
+			&& Record.SnapshotSimulationTick < LastReceivedStateSimulationTick)
 		{
 			SendSnapshotWindowAcknowledgement(Record.WorldEpoch, Record.SnapshotTransferId, Record.SnapshotRevision,
 				static_cast<uint16>(FMath::Min<int32>(Record.SnapshotRecordCount, SnapshotWindowRecords) - 1), false);
@@ -998,7 +1036,8 @@ void AFlecsReplicationChannel::HandleReplicatedSnapshot()
 			if (Record.SnapshotRecordIndex >= SnapshotWindowRecords)
 			{
 				SendSnapshotWindowAcknowledgement(Record.WorldEpoch, Record.SnapshotTransferId, Record.SnapshotRevision,
-					static_cast<uint16>(FMath::Min<int32>(Record.SnapshotRecordCount, SnapshotWindowRecords) - 1), false);
+					static_cast<uint16>(FMath::Min<int32>(Record.SnapshotRecordCount, SnapshotWindowRecords) - 1),
+					false);
 				return;
 			}
 			IncomingSnapshotTransfer = FIncomingSnapshotTransfer();
@@ -1016,27 +1055,33 @@ void AFlecsReplicationChannel::HandleReplicatedSnapshot()
 		{
 			return;
 		}
-		if (Record.WorldEpoch != IncomingSnapshotTransfer.WorldEpoch || Record.SnapshotTransferId != IncomingSnapshotTransfer.TransferId ||
-			Record.SnapshotRevision != IncomingSnapshotTransfer.Revision || Record.SnapshotSimulationTick != IncomingSnapshotTransfer.SimulationTick ||
-			Record.SnapshotRecordCount != IncomingSnapshotTransfer.RecordCount)
+		if (Record.WorldEpoch != IncomingSnapshotTransfer.WorldEpoch
+			|| Record.SnapshotTransferId != IncomingSnapshotTransfer.TransferId
+			|| Record.SnapshotRevision != IncomingSnapshotTransfer.Revision
+			|| Record.SnapshotSimulationTick != IncomingSnapshotTransfer.SimulationTick
+			|| Record.SnapshotRecordCount != IncomingSnapshotTransfer.RecordCount)
 		{
-			FailSnapshotTransfer(IncomingSnapshotTransfer.WorldEpoch, TEXT("Mixed epoch, transfer, or revision in a FastArray window."));
+			FailSnapshotTransfer(
+				IncomingSnapshotTransfer.WorldEpoch, TEXT("Mixed epoch, transfer, or revision in a FastArray window."));
 			return;
 		}
 		const uint16 WindowStart = IncomingSnapshotTransfer.NextAcknowledgementStartIndex;
-		const uint16 WindowEnd = static_cast<uint16>(FMath::Min<int32>(IncomingSnapshotTransfer.RecordCount,
-			static_cast<int32>(WindowStart) + SnapshotWindowRecords));
-		if (Record.SnapshotRecordIndex >= WindowEnd || !IsRecordBoundedAndValid(Record, IncomingSnapshotTransfer.WorldEpoch) ||
-			Record.SnapshotSimulationTick < Record.SourceSimulationTick)
+		const uint16 WindowEnd = static_cast<uint16>(FMath::Min<int32>(
+			IncomingSnapshotTransfer.RecordCount, static_cast<int32>(WindowStart) + SnapshotWindowRecords));
+		if (Record.SnapshotRecordIndex >= WindowEnd
+			|| !IsRecordBoundedAndValid(Record, IncomingSnapshotTransfer.WorldEpoch)
+			|| Record.SnapshotSimulationTick < Record.SourceSimulationTick)
 		{
-			FailSnapshotTransfer(IncomingSnapshotTransfer.WorldEpoch, TEXT("Invalid or out-of-order FastArray snapshot window record."));
+			FailSnapshotTransfer(
+				IncomingSnapshotTransfer.WorldEpoch, TEXT("Invalid or out-of-order FastArray snapshot window record."));
 			return;
 		}
 		if (IncomingSnapshotTransfer.ReceivedIndices[Record.SnapshotRecordIndex])
 		{
 			if (!HasSameSnapshotRecord(IncomingSnapshotTransfer.Records[Record.SnapshotRecordIndex], Record))
 			{
-				FailSnapshotTransfer(IncomingSnapshotTransfer.WorldEpoch, TEXT("Duplicate snapshot index carried different data."));
+				FailSnapshotTransfer(
+					IncomingSnapshotTransfer.WorldEpoch, TEXT("Duplicate snapshot index carried different data."));
 				return;
 			}
 			continue;
@@ -1046,7 +1091,8 @@ void AFlecsReplicationChannel::HandleReplicatedSnapshot()
 		const uint64 NewWireFramingBytes = IncomingSnapshotTransfer.ReceivedWireFramingBytes + RecordWireFramingBytes;
 		if (NewPayloadBytes + NewWireFramingBytes > static_cast<uint64>(MaxSnapshotPayloadBytes))
 		{
-			FailSnapshotTransfer(IncomingSnapshotTransfer.WorldEpoch, TEXT("Snapshot batch exceeded its bounded encoded size."));
+			FailSnapshotTransfer(
+				IncomingSnapshotTransfer.WorldEpoch, TEXT("Snapshot batch exceeded its bounded encoded size."));
 			return;
 		}
 		CopyState(IncomingSnapshotTransfer.Records[Record.SnapshotRecordIndex], Record);
@@ -1061,8 +1107,8 @@ void AFlecsReplicationChannel::HandleReplicatedSnapshot()
 		return;
 	}
 	const uint16 WindowStart = IncomingSnapshotTransfer.NextAcknowledgementStartIndex;
-	const uint16 WindowEnd = static_cast<uint16>(FMath::Min<int32>(IncomingSnapshotTransfer.RecordCount,
-		static_cast<int32>(WindowStart) + SnapshotWindowRecords));
+	const uint16 WindowEnd = static_cast<uint16>(FMath::Min<int32>(
+		IncomingSnapshotTransfer.RecordCount, static_cast<int32>(WindowStart) + SnapshotWindowRecords));
 	for (uint16 Index = WindowStart; Index < WindowEnd; ++Index)
 	{
 		if (!IncomingSnapshotTransfer.ReceivedIndices[Index])
@@ -1082,10 +1128,11 @@ void AFlecsReplicationChannel::HandleReplicatedSnapshot()
 		{
 			const uint16* PreviousGeneration = EntityGenerations.Find(Record.NetworkEntityId);
 			const uint16* PreviousDefinition = EntityDefinitions.Find(Record.NetworkEntityId);
-			if ((PreviousGeneration && *PreviousGeneration != Record.EntityGeneration) ||
-				(PreviousDefinition && *PreviousDefinition != Record.DefinitionWireId))
+			if ((PreviousGeneration && *PreviousGeneration != Record.EntityGeneration)
+				|| (PreviousDefinition && *PreviousDefinition != Record.DefinitionWireId))
 			{
-				FailSnapshotTransfer(IncomingSnapshotTransfer.WorldEpoch, TEXT("Snapshot batch mixes entity generations or definitions."));
+				FailSnapshotTransfer(IncomingSnapshotTransfer.WorldEpoch,
+					TEXT("Snapshot batch mixes entity generations or definitions."));
 				return;
 			}
 			EntityGenerations.Add(Record.NetworkEntityId, Record.EntityGeneration);
@@ -1094,7 +1141,8 @@ void AFlecsReplicationChannel::HandleReplicatedSnapshot()
 			{
 				if (EntitiesWithComponents.Contains(Record.NetworkEntityId))
 				{
-					FailSnapshotTransfer(IncomingSnapshotTransfer.WorldEpoch, TEXT("Entity despawn conflicts with another operation in its batch."));
+					FailSnapshotTransfer(IncomingSnapshotTransfer.WorldEpoch,
+						TEXT("Entity despawn conflicts with another operation in its batch."));
 					return;
 				}
 				DespawnedEntities.Add(Record.NetworkEntityId);
@@ -1103,29 +1151,35 @@ void AFlecsReplicationChannel::HandleReplicatedSnapshot()
 			{
 				if (DespawnedEntities.Contains(Record.NetworkEntityId))
 				{
-					FailSnapshotTransfer(IncomingSnapshotTransfer.WorldEpoch, TEXT("Entity operation follows a despawn in the same batch."));
+					FailSnapshotTransfer(IncomingSnapshotTransfer.WorldEpoch,
+						TEXT("Entity operation follows a despawn in the same batch."));
 					return;
 				}
 				EntitiesWithComponents.Add(Record.NetworkEntityId);
 			}
 			if (UniqueKeys.Contains(MakeKey(Record)))
 			{
-				FailSnapshotTransfer(IncomingSnapshotTransfer.WorldEpoch, TEXT("Snapshot batch contains duplicate record identities."));
+				FailSnapshotTransfer(
+					IncomingSnapshotTransfer.WorldEpoch, TEXT("Snapshot batch contains duplicate record identities."));
 				return;
 			}
 			UniqueKeys.Add(MakeKey(Record));
 			const uint16* HighestGeneration = HighestReceivedGenerations.Find(Record.NetworkEntityId);
 			const uint16* HighestDefinition = HighestReceivedDefinitions.Find(Record.NetworkEntityId);
-			if (LastReceivedSnapshotEpoch == Record.WorldEpoch && HighestGeneration &&
-				Record.EntityGeneration != *HighestGeneration && !IsGenerationNewer(Record.EntityGeneration, *HighestGeneration))
+			if (LastReceivedSnapshotEpoch == Record.WorldEpoch && HighestGeneration
+				&& Record.EntityGeneration != *HighestGeneration
+				&& !IsGenerationNewer(Record.EntityGeneration, *HighestGeneration))
 			{
-				FailSnapshotTransfer(IncomingSnapshotTransfer.WorldEpoch, TEXT("Snapshot batch contains a stale entity generation."));
+				FailSnapshotTransfer(
+					IncomingSnapshotTransfer.WorldEpoch, TEXT("Snapshot batch contains a stale entity generation."));
 				return;
 			}
-			if (LastReceivedSnapshotEpoch == Record.WorldEpoch && HighestGeneration &&
-				Record.EntityGeneration == *HighestGeneration && HighestDefinition && Record.DefinitionWireId != *HighestDefinition)
+			if (LastReceivedSnapshotEpoch == Record.WorldEpoch && HighestGeneration
+				&& Record.EntityGeneration == *HighestGeneration && HighestDefinition
+				&& Record.DefinitionWireId != *HighestDefinition)
 			{
-				FailSnapshotTransfer(IncomingSnapshotTransfer.WorldEpoch, TEXT("Snapshot batch changes a definition for an existing generation."));
+				FailSnapshotTransfer(IncomingSnapshotTransfer.WorldEpoch,
+					TEXT("Snapshot batch changes a definition for an existing generation."));
 				return;
 			}
 		}
@@ -1143,14 +1197,15 @@ void AFlecsReplicationChannel::HandleReplicatedSnapshot()
 	IncomingSnapshotTransfer.LastProgressSeconds = NowSeconds;
 }
 
-void AFlecsReplicationChannel::ServerAcknowledgeSnapshotWindow_Implementation(uint64 ServerWorldEpoch,
-	uint32 TransferId, uint64 SnapshotRevision, uint16 HighestRecordIndex, bool bAccepted)
+void AFlecsReplicationChannel::ServerAcknowledgeSnapshotWindow_Implementation(
+	uint64 ServerWorldEpoch, uint32 TransferId, uint64 SnapshotRevision, uint16 HighestRecordIndex, bool bAccepted)
 {
 	check(IsInGameThread());
 	const APlayerController* OwningController = Cast<APlayerController>(GetOwner());
 	if (HasAuthority() && OwningController && OwningController->GetNetConnection())
 	{
-		HandleSnapshotWindowAcknowledgement(ServerWorldEpoch, TransferId, SnapshotRevision, HighestRecordIndex, bAccepted);
+		HandleSnapshotWindowAcknowledgement(
+			ServerWorldEpoch, TransferId, SnapshotRevision, HighestRecordIndex, bAccepted);
 	}
 }
 
@@ -1162,22 +1217,24 @@ void AFlecsReplicationChannel::OnRep_WorldEpoch()
 void AFlecsReplicationChannel::OnRep_ServerTickHeartbeat()
 {
 	check(IsInGameThread());
-	if (!HasAuthority() && bClientManifestValidated &&
-		ReplicatedServerTickHeartbeat.ServerWorldEpoch == HandshakeServerWorldEpoch &&
-		ReplicatedServerTickHeartbeat.SimulationTick > CurrentSimulationTick)
+	if (!HasAuthority() && bClientManifestValidated
+		&& ReplicatedServerTickHeartbeat.ServerWorldEpoch == HandshakeServerWorldEpoch
+		&& ReplicatedServerTickHeartbeat.SimulationTick > CurrentSimulationTick)
 	{
 		CurrentSimulationTick = ReplicatedServerTickHeartbeat.SimulationTick;
-		OnServerTickHeartbeatReceived.Broadcast(ReplicatedServerTickHeartbeat.ServerWorldEpoch,
-			ReplicatedServerTickHeartbeat.SimulationTick);
+		OnServerTickHeartbeatReceived.Broadcast(
+			ReplicatedServerTickHeartbeat.ServerWorldEpoch, ReplicatedServerTickHeartbeat.SimulationTick);
 	}
 }
 
 void AFlecsReplicationChannel::RecordOutgoingCommand(const FFlecsCommandEnvelope& Envelope, bool bIsDiscrete)
 {
- FFlecsLogicalSequence& Sequence = bIsDiscrete ? DiagnosticDiscreteSent : DiagnosticContinuousSent;
- if (!Envelope.Payload.IsValid() || !Sequence.Accept(Envelope.WorldEpoch, Envelope.Sequence)) return;
- if (UWorld* World = GetWorld()) if (auto* Diagnostics = World->GetSubsystem<UFlecsNetworkDiagnosticsSubsystem>())
-  Diagnostics->RecordPayload(1, true, Envelope.Payload.Num());
+	FFlecsLogicalSequence& Sequence = bIsDiscrete ? DiagnosticDiscreteSent : DiagnosticContinuousSent;
+	if (!Envelope.Payload.IsValid() || !Sequence.Accept(Envelope.WorldEpoch, Envelope.Sequence))
+		return;
+	if (UWorld* World = GetWorld())
+		if (auto* Diagnostics = World->GetSubsystem<UFlecsNetworkDiagnosticsSubsystem>())
+			Diagnostics->RecordPayload(1, true, Envelope.Payload.Num());
 }
 
 void AFlecsReplicationChannel::SubmitDiscreteCommand(const FFlecsCommandEnvelope& Envelope)
@@ -1220,9 +1277,11 @@ void AFlecsReplicationChannel::HandleCommand(const FFlecsCommandEnvelope& Envelo
 	}
 	if (bIsDiscrete)
 	{
-		if (!bServerManifestValidated || Envelope.WorldEpoch == 0 || Envelope.WorldEpoch != CurrentWorldEpoch || Envelope.Sequence == 0)
+		if (!bServerManifestValidated || Envelope.WorldEpoch == 0 || Envelope.WorldEpoch != CurrentWorldEpoch
+			|| Envelope.Sequence == 0)
 		{
-			SendDiscreteCommandResult(Envelope.WorldEpoch, Envelope.Sequence, FlecsNetworkCommandResult::RejectedInvalid);
+			SendDiscreteCommandResult(
+				Envelope.WorldEpoch, Envelope.Sequence, FlecsNetworkCommandResult::RejectedInvalid);
 			return;
 		}
 		if (const uint8* PendingResult = PendingDiscreteCommandResults.Find(Envelope.Sequence))
@@ -1240,20 +1299,22 @@ void AFlecsReplicationChannel::HandleCommand(const FFlecsCommandEnvelope& Envelo
 		{
 			const uint32 BackwardDistance = LastDiscreteCommandSequence - Envelope.Sequence;
 			const uint8 ResultCode = LastDiscreteCommandSequence != 0 && BackwardDistance < 0x80000000u
-				? FlecsNetworkCommandResult::ExecutionResultExpired
-				: FlecsNetworkCommandResult::RejectedSequence;
+									   ? FlecsNetworkCommandResult::ExecutionResultExpired
+									   : FlecsNetworkCommandResult::RejectedSequence;
 			SendDiscreteCommandResult(Envelope.WorldEpoch, Envelope.Sequence, ResultCode);
 			return;
 		}
 	}
-	else if (!bServerManifestValidated || Envelope.WorldEpoch == 0 || Envelope.WorldEpoch != CurrentWorldEpoch || Envelope.Sequence == 0)
+	else if (!bServerManifestValidated || Envelope.WorldEpoch == 0 || Envelope.WorldEpoch != CurrentWorldEpoch
+			 || Envelope.Sequence == 0)
 	{
 		return;
 	}
 
 	uint32& LastSequence = bIsDiscrete ? LastDiscreteCommandSequence : LastContinuousCommandSequence;
 	uint16& CommandsInWindow = bIsDiscrete ? DiscreteCommandsInWindow : ContinuousCommandsInWindow;
-	double& CommandWindowStartSeconds = bIsDiscrete ? DiscreteCommandWindowStartSeconds : ContinuousCommandWindowStartSeconds;
+	double& CommandWindowStartSeconds =
+		bIsDiscrete ? DiscreteCommandWindowStartSeconds : ContinuousCommandWindowStartSeconds;
 	const uint32 SequenceDistance = Envelope.Sequence - LastSequence;
 	if (!bIsDiscrete && (SequenceDistance == 0 || SequenceDistance > 1024))
 	{
@@ -1261,22 +1322,24 @@ void AFlecsReplicationChannel::HandleCommand(const FFlecsCommandEnvelope& Envelo
 	}
 
 	const int32 RequestedTickDelta = static_cast<int32>(Envelope.RequestedSimulationTick - CurrentSimulationTick);
-	if (Envelope.WorldEpoch == 0 || Envelope.WorldEpoch != CurrentWorldEpoch || Envelope.CommandWireId == 0 ||
-		Envelope.TargetNetworkEntityId == 0 || Envelope.TargetEntityGeneration == 0 || Envelope.RequestedSimulationTick == 0 ||
-		Envelope.Payload.Num() > MaxCommandPayloadBytes)
+	if (Envelope.WorldEpoch == 0 || Envelope.WorldEpoch != CurrentWorldEpoch || Envelope.CommandWireId == 0
+		|| Envelope.TargetNetworkEntityId == 0 || Envelope.TargetEntityGeneration == 0
+		|| Envelope.RequestedSimulationTick == 0 || Envelope.Payload.Num() > MaxCommandPayloadBytes)
 	{
 		if (bIsDiscrete)
 		{
-			SendDiscreteCommandResult(Envelope.WorldEpoch, Envelope.Sequence, FlecsNetworkCommandResult::RejectedInvalid);
+			SendDiscreteCommandResult(
+				Envelope.WorldEpoch, Envelope.Sequence, FlecsNetworkCommandResult::RejectedInvalid);
 		}
 		return;
 	}
-	if (RequestedTickDelta < -static_cast<int32>(MaxPastCommandTickWindow) ||
-		RequestedTickDelta > static_cast<int32>(MaxFutureCommandTickWindow))
+	if (RequestedTickDelta < -static_cast<int32>(MaxPastCommandTickWindow)
+		|| RequestedTickDelta > static_cast<int32>(MaxFutureCommandTickWindow))
 	{
 		if (bIsDiscrete)
 		{
-			SendDiscreteCommandResult(Envelope.WorldEpoch, Envelope.Sequence, FlecsNetworkCommandResult::RejectedTickWindow);
+			SendDiscreteCommandResult(
+				Envelope.WorldEpoch, Envelope.Sequence, FlecsNetworkCommandResult::RejectedTickWindow);
 		}
 		return;
 	}
@@ -1292,7 +1355,8 @@ void AFlecsReplicationChannel::HandleCommand(const FFlecsCommandEnvelope& Envelo
 	{
 		if (bIsDiscrete)
 		{
-			SendDiscreteCommandResult(Envelope.WorldEpoch, Envelope.Sequence, FlecsNetworkCommandResult::RejectedRateLimit);
+			SendDiscreteCommandResult(
+				Envelope.WorldEpoch, Envelope.Sequence, FlecsNetworkCommandResult::RejectedRateLimit);
 		}
 		return;
 	}
@@ -1301,19 +1365,22 @@ void AFlecsReplicationChannel::HandleCommand(const FFlecsCommandEnvelope& Envelo
 	{
 		if (PendingDiscreteCommandResults.Num() >= MaxPendingDiscreteCommandResults)
 		{
-			SendDiscreteCommandResult(Envelope.WorldEpoch, Envelope.Sequence, FlecsNetworkCommandResult::RejectedWorkerUnavailable);
+			SendDiscreteCommandResult(
+				Envelope.WorldEpoch, Envelope.Sequence, FlecsNetworkCommandResult::RejectedWorkerUnavailable);
 			return;
 		}
 		if (!OnDiscreteCommandAdmission || !OnDiscreteCommandAdmission(Envelope))
 		{
-			SendDiscreteCommandResult(Envelope.WorldEpoch, Envelope.Sequence, FlecsNetworkCommandResult::RejectedWorkerUnavailable);
+			SendDiscreteCommandResult(
+				Envelope.WorldEpoch, Envelope.Sequence, FlecsNetworkCommandResult::RejectedWorkerUnavailable);
 			return;
 		}
 		LastSequence = Envelope.Sequence;
 		PendingDiscreteCommandResults.Add(Envelope.Sequence, FlecsNetworkCommandResult::AcceptedForWorker);
 		++CommandsInWindow;
-		if (UWorld* World = GetWorld()) if (auto* Diagnostics = World->GetSubsystem<UFlecsNetworkDiagnosticsSubsystem>())
-			Diagnostics->RecordPayload(1, false, Envelope.Payload.Num());
+		if (UWorld* World = GetWorld())
+			if (auto* Diagnostics = World->GetSubsystem<UFlecsNetworkDiagnosticsSubsystem>())
+				Diagnostics->RecordPayload(1, false, Envelope.Payload.Num());
 		OnDiscreteCommandReceived.Broadcast(Envelope);
 		SendDiscreteCommandResult(Envelope.WorldEpoch, Envelope.Sequence, FlecsNetworkCommandResult::AcceptedForWorker);
 	}
@@ -1321,8 +1388,9 @@ void AFlecsReplicationChannel::HandleCommand(const FFlecsCommandEnvelope& Envelo
 	{
 		LastSequence = Envelope.Sequence;
 		++CommandsInWindow;
-		if (UWorld* World = GetWorld()) if (auto* Diagnostics = World->GetSubsystem<UFlecsNetworkDiagnosticsSubsystem>())
-			Diagnostics->RecordPayload(1, false, Envelope.Payload.Num());
+		if (UWorld* World = GetWorld())
+			if (auto* Diagnostics = World->GetSubsystem<UFlecsNetworkDiagnosticsSubsystem>())
+				Diagnostics->RecordPayload(1, false, Envelope.Payload.Num());
 		OnContinuousCommandReceived.Broadcast(Envelope);
 	}
 }
@@ -1336,12 +1404,13 @@ void AFlecsReplicationChannel::SendDiscreteCommandResult(uint64 WorldEpoch, uint
 	}
 }
 
-bool AFlecsReplicationChannel::ReportDiscreteCommandExecutionResult(uint64 InWorldEpoch, uint32 Sequence, uint8 ResultCode)
+bool AFlecsReplicationChannel::ReportDiscreteCommandExecutionResult(
+	uint64 InWorldEpoch, uint32 Sequence, uint8 ResultCode)
 {
 	check(IsInGameThread());
-	if (!HasAuthority() || InWorldEpoch == 0 || InWorldEpoch != CurrentWorldEpoch || Sequence == 0 ||
-		ResultCode < FlecsNetworkCommandResult::ExecutionAccepted || ResultCode > FlecsNetworkCommandResult::ExecutionFailed ||
-		!PendingDiscreteCommandResults.Remove(Sequence))
+	if (!HasAuthority() || InWorldEpoch == 0 || InWorldEpoch != CurrentWorldEpoch || Sequence == 0
+		|| ResultCode < FlecsNetworkCommandResult::ExecutionAccepted
+		|| ResultCode > FlecsNetworkCommandResult::ExecutionFailed || !PendingDiscreteCommandResults.Remove(Sequence))
 	{
 		return false;
 	}
@@ -1360,10 +1429,10 @@ bool AFlecsReplicationChannel::ReportDiscreteCommandExecutionResult(uint64 InWor
 bool AFlecsReplicationChannel::PublishServerTickHeartbeat(uint64 InWorldEpoch, uint32 InSimulationTick)
 {
 	check(IsInGameThread());
-	if (!HasAuthority() || !bServerManifestValidated || InWorldEpoch == 0 || InWorldEpoch != HandshakeServerWorldEpoch ||
-		InSimulationTick == 0 || (CurrentWorldEpoch == InWorldEpoch && InSimulationTick < CurrentSimulationTick) ||
-		(ReplicatedServerTickHeartbeat.ServerWorldEpoch == InWorldEpoch &&
-			InSimulationTick <= ReplicatedServerTickHeartbeat.SimulationTick))
+	if (!HasAuthority() || !bServerManifestValidated || InWorldEpoch == 0 || InWorldEpoch != HandshakeServerWorldEpoch
+		|| InSimulationTick == 0 || (CurrentWorldEpoch == InWorldEpoch && InSimulationTick < CurrentSimulationTick)
+		|| (ReplicatedServerTickHeartbeat.ServerWorldEpoch == InWorldEpoch
+			&& InSimulationTick <= ReplicatedServerTickHeartbeat.SimulationTick))
 	{
 		return false;
 	}
@@ -1376,14 +1445,16 @@ bool AFlecsReplicationChannel::PublishServerTickHeartbeat(uint64 InWorldEpoch, u
 	return true;
 }
 
-bool AFlecsReplicationChannel::IsRecordBoundedAndValid(const FFlecsReplicationRecord& Record, uint64 ExpectedEpoch) const
+bool AFlecsReplicationChannel::IsRecordBoundedAndValid(
+	const FFlecsReplicationRecord& Record, uint64 ExpectedEpoch) const
 {
-	return Record.WorldEpoch != 0 && Record.WorldEpoch == ExpectedEpoch && Record.NetworkEntityId != 0 &&
-		Record.EntityGeneration != 0 && Record.DefinitionWireId != 0 && Record.SourceSimulationTick != 0 &&
-		Record.Operation <= 4 &&
-		((Record.Operation == 0 || Record.Operation == 1) ? Record.ComponentWireId != 0 : Record.ComponentWireId == 0) &&
-		Record.Payload.IsValid() && Record.Payload.Num() <= MaxPayloadBytesPerRecord &&
-		(Record.Operation == 0 || Record.Payload.IsEmpty());
+	return Record.WorldEpoch != 0 && Record.WorldEpoch == ExpectedEpoch && Record.NetworkEntityId != 0
+		&& Record.EntityGeneration != 0 && Record.DefinitionWireId != 0 && Record.SourceSimulationTick != 0
+		&& Record.Operation <= 4
+		&& ((Record.Operation == 0 || Record.Operation == 1) ? Record.ComponentWireId != 0
+															 : Record.ComponentWireId == 0)
+		&& Record.Payload.IsValid() && Record.Payload.Num() <= MaxPayloadBytesPerRecord
+		&& (Record.Operation == 0 || Record.Payload.IsEmpty());
 }
 
 void AFlecsReplicationChannel::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const

@@ -20,14 +20,18 @@ struct FLECSNETWORK_API FFlecsReplicationRecordArray : public FIrisFastArraySeri
 
 	bool NetDeltaSerialize(FNetDeltaSerializeInfo& DeltaParms)
 	{
-		return FFastArraySerializer::FastArrayDeltaSerialize<FFlecsReplicationRecord, FFlecsReplicationRecordArray>(Items, DeltaParms, *this);
+		return FFastArraySerializer::FastArrayDeltaSerialize<FFlecsReplicationRecord, FFlecsReplicationRecordArray>(
+			Items, DeltaParms, *this);
 	}
 
 	void PostReplicatedReceive(const FFastArraySerializer::FPostReplicatedReceiveParameters& Parameters);
 };
 
-template<>
+template <>
 struct TStructOpsTypeTraits<FFlecsReplicationRecordArray> : TStructOpsTypeTraitsBase2<FFlecsReplicationRecordArray>
 {
-	enum { WithNetDeltaSerializer = true };
+	enum
+	{
+		WithNetDeltaSerializer = true
+	};
 };

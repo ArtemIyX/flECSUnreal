@@ -3,7 +3,10 @@
 #include "CoreMinimal.h"
 #include <functional>
 
-namespace flecs { struct world; }
+namespace flecs
+{
+struct world;
+}
 class FFlecsSimulationDataBuilder;
 
 using FFlecsWorkerCommand = std::function<void(flecs::world&)>;

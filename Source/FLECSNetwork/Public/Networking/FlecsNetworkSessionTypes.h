@@ -21,7 +21,7 @@ class AFlecsReplicationChannel;
 class UWorld;
 
 /** Called once per world before registry freeze; register only trusted worker-safe callbacks. */
-using FFlecsNetworkSessionConfigurator = TFunction<bool(UWorld& World,
-	FFlecsNetworkSessionRegistrar& Registrar, FString& OutError)>;
+using FFlecsNetworkSessionConfigurator =
+	TFunction<bool(UWorld& World, FFlecsNetworkSessionRegistrar& Registrar, FString& OutError)>;
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FFlecsSessionEventDelegate, const FFlecsSessionEvent&);

@@ -22,7 +22,7 @@ struct FLECSNETWORK_API FFlecsNetworkEntityKey
 
 	friend uint32 GetTypeHash(const FFlecsNetworkEntityKey& Key)
 	{
-		return HashCombine(HashCombine(GetTypeHash(Key.WorldEpoch), GetTypeHash(Key.EntityId)),
-		                   GetTypeHash(Key.Generation));
+		return HashCombine(
+			HashCombine(GetTypeHash(Key.WorldEpoch), GetTypeHash(Key.EntityId)), GetTypeHash(Key.Generation));
 	}
 };

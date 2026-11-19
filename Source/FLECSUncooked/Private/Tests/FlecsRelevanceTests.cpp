@@ -5,40 +5,39 @@
 
 namespace
 {
-	FFlecsSpatialEntity Entity(uint32 Id, float X, uint64 Owner = 0, bool bPrivate = false)
-	{
-		FFlecsSpatialEntity Value;
-		Value.Key = { 1, Id, 1 };
-		Value.Position = FVector3f(X, 0, 0);
-		Value.Revision = 1;
-		Value.OwnerConnectionId = Owner;
-		Value.EstimatedUpdateBytes = 32;
-		Value.Visibility = bPrivate ? EFlecsNetworkVisibility::OwnerOnly : EFlecsNetworkVisibility::RelevantToAll;
-		return Value;
-	}
+FFlecsSpatialEntity Entity(uint32 Id, float X, uint64 Owner = 0, bool bPrivate = false)
+{
+	FFlecsSpatialEntity Value;
+	Value.Key = {1, Id, 1};
+	Value.Position = FVector3f(X, 0, 0);
+	Value.Revision = 1;
+	Value.OwnerConnectionId = Owner;
+	Value.EstimatedUpdateBytes = 32;
+	Value.Visibility = bPrivate ? EFlecsNetworkVisibility::OwnerOnly : EFlecsNetworkVisibility::RelevantToAll;
+	return Value;
+}
 
-	FFlecsConnectionInterest Interest(uint64 Connection, float X)
-	{
-		FFlecsConnectionInterest Value;
-		Value.ConnectionId = Connection;
-		Value.ViewPosition = FVector3f(X, 0, 0);
-		Value.Tiers = { { 100.0f, 10.0f } };
-		Value.HysteresisDistance = 20.0f;
-		return Value;
-	}
+FFlecsConnectionInterest Interest(uint64 Connection, float X)
+{
+	FFlecsConnectionInterest Value;
+	Value.ConnectionId = Connection;
+	Value.ViewPosition = FVector3f(X, 0, 0);
+	Value.Tiers = {{100.0f, 10.0f}};
+	Value.HysteresisDistance = 20.0f;
+	return Value;
+}
 
-	bool Has(const FFlecsRelevanceSelection& Selection, uint32 Id, EFlecsRelevanceTransition Transition)
-	{
-		return Selection.Records.ContainsByPredicate([Id, Transition](const FFlecsScheduledEntity& Record)
-		{
-			return Record.Key.EntityId == Id && Record.Transition == Transition;
-		});
-	}
+bool Has(const FFlecsRelevanceSelection& Selection, uint32 Id, EFlecsRelevanceTransition Transition)
+{
+	return Selection.Records.ContainsByPredicate([Id, Transition](const FFlecsScheduledEntity& Record) {
+		return Record.Key.EntityId == Id && Record.Transition == Transition;
+	});
+}
 
-	bool Accept(FFlecsPerConnectionScheduler& Scheduler, const FFlecsRelevanceSelection& Selection, double Now)
-	{
-		return Selection.SelectionId == 0 || Scheduler.CompleteSelection(Selection.SelectionId, true, Now);
-	}
+bool Accept(FFlecsPerConnectionScheduler& Scheduler, const FFlecsRelevanceSelection& Selection, double Now)
+{
+	return Selection.SelectionId == 0 || Scheduler.CompleteSelection(Selection.SelectionId, true, Now);
+}
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFlecsRelevanceClientsTest, "Flecs.Network.Relevance.ClientsAndHysteresis",
@@ -50,9 +49,10 @@ bool FFlecsRelevanceClientsTest::RunTest(const FString& Parameters)
 	FFlecsSpatialSnapshot Snapshot;
 	Snapshot.WorldEpoch = 1;
 	Snapshot.SimulationTick = 1;
-	Snapshot.Entities = { Entity(1, 0), Entity(2, 1000), Entity(3, 0, 1, true) };
+	Snapshot.Entities = {Entity(1, 0), Entity(2, 1000), Entity(3, 0, 1, true)};
 	FFlecsSpatialIndex Index;
-	if (!TestTrue(TEXT("Build initial spatial index"), Index.Build(Snapshot, 100.0f))) return false;
+	if (!TestTrue(TEXT("Build initial spatial index"), Index.Build(Snapshot, 100.0f)))
+		return false;
 	FFlecsPerConnectionScheduler First;
 	FFlecsPerConnectionScheduler Second;
 	FFlecsConnectionInterest A = Interest(1, 0);
@@ -67,7 +67,8 @@ bool FFlecsRelevanceClientsTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Owner sees private entity"), Has(SelectionA, 3, EFlecsRelevanceTransition::Enter));
 	TestFalse(TEXT("First client does not see distant entity"), Has(SelectionA, 2, EFlecsRelevanceTransition::Enter));
 	TestTrue(TEXT("Second client sees its nearby entity"), Has(SelectionB, 2, EFlecsRelevanceTransition::Enter));
-	TestFalse(TEXT("Override cannot reveal another owner's entity"), Has(SelectionB, 3, EFlecsRelevanceTransition::Enter));
+	TestFalse(
+		TEXT("Override cannot reveal another owner's entity"), Has(SelectionB, 3, EFlecsRelevanceTransition::Enter));
 	TestTrue(TEXT("Accept first handoff"), Accept(First, SelectionA, 1.0));
 	TestTrue(TEXT("Accept second handoff"), Accept(Second, SelectionB, 1.0));
 
@@ -78,7 +79,8 @@ bool FFlecsRelevanceClientsTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Select within hysteresis"), First.Select(Index, A, 1.05, Budget, SelectionA));
 	TestEqual(TEXT("Changed state is not sent before tier deadline"), SelectionA.Records.Num(), 0);
 	TestTrue(TEXT("Select at tier deadline"), First.Select(Index, A, 1.11, Budget, SelectionA));
-	TestTrue(TEXT("Previously relevant entity stays inside hysteresis"), Has(SelectionA, 1, EFlecsRelevanceTransition::Update));
+	TestTrue(TEXT("Previously relevant entity stays inside hysteresis"),
+		Has(SelectionA, 1, EFlecsRelevanceTransition::Update));
 	TestTrue(TEXT("Accept due update"), Accept(First, SelectionA, 1.11));
 	Snapshot.Entities[0].Position.X = 121;
 	Snapshot.SimulationTick++;
@@ -103,9 +105,10 @@ bool FFlecsRelevanceBudgetTest::RunTest(const FString& Parameters)
 	FFlecsSpatialSnapshot Snapshot;
 	Snapshot.WorldEpoch = 1;
 	Snapshot.SimulationTick = 1;
-	Snapshot.Entities = { Entity(1, 0), Entity(2, 0), Entity(3, 0) };
+	Snapshot.Entities = {Entity(1, 0), Entity(2, 0), Entity(3, 0)};
 	FFlecsSpatialIndex Index;
-	if (!TestTrue(TEXT("Build index"), Index.Build(Snapshot, 100))) return false;
+	if (!TestTrue(TEXT("Build index"), Index.Build(Snapshot, 100)))
+		return false;
 	FFlecsPerConnectionScheduler Scheduler;
 	const FFlecsConnectionInterest Client = Interest(1, 0);
 	FFlecsRelevanceBudget Budget;
@@ -113,17 +116,20 @@ bool FFlecsRelevanceBudgetTest::RunTest(const FString& Parameters)
 	Budget.MaxBytes = 32;
 	FFlecsRelevanceSelection Selection;
 	TestTrue(TEXT("First selection"), Scheduler.Select(Index, Client, 1.0, Budget, Selection));
-	if (!TestEqual(TEXT("One record fits budget"), Selection.Records.Num(), 1)) return false;
+	if (!TestEqual(TEXT("One record fits budget"), Selection.Records.Num(), 1))
+		return false;
 	const uint32 FirstId = Selection.Records[0].Key.EntityId;
 	TestEqual(TEXT("Remaining records deferred"), Selection.Metrics.DeferredByBudget, uint32(2));
 	TestFalse(TEXT("Stale handoff token rejected"), Scheduler.CompleteSelection(Selection.SelectionId + 1, true, 1.0));
-	TestTrue(TEXT("Rejected handoff clears assignment"), Scheduler.CompleteSelection(Selection.SelectionId, false, 1.0));
+	TestTrue(
+		TEXT("Rejected handoff clears assignment"), Scheduler.CompleteSelection(Selection.SelectionId, false, 1.0));
 	TSet<uint32> Accepted;
 	for (int32 Attempt = 0; Attempt < 3; ++Attempt)
 	{
 		const double Now = 1.01 + 0.01 * Attempt;
 		TestTrue(TEXT("Select deferred entity"), Scheduler.Select(Index, Client, Now, Budget, Selection));
-		if (!TestEqual(TEXT("Exactly one deferred entity selected"), Selection.Records.Num(), 1)) return false;
+		if (!TestEqual(TEXT("Exactly one deferred entity selected"), Selection.Records.Num(), 1))
+			return false;
 		Accepted.Add(Selection.Records[0].Key.EntityId);
 		TestTrue(TEXT("Accept selection"), Accept(Scheduler, Selection, Now));
 	}
@@ -173,16 +179,22 @@ bool FFlecsRelevanceIdentityTest::RunTest(const FString& Parameters)
 	Snapshot.SimulationTick++;
 	TestTrue(TEXT("Despawn publication builds"), Index.Build(Snapshot, 100));
 	TestTrue(TEXT("Despawn selects"), Scheduler.Select(Index, Client, 3, Budget, Selection));
-	TestTrue(TEXT("Old generation exits"), Selection.Records.ContainsByPredicate([](const FFlecsScheduledEntity& Record)
-		{ return Record.Key.EntityId == 1 && Record.Key.Generation == 2 && Record.Transition == EFlecsRelevanceTransition::Exit; }));
+	TestTrue(
+		TEXT("Old generation exits"), Selection.Records.ContainsByPredicate([](const FFlecsScheduledEntity& Record) {
+			return Record.Key.EntityId == 1 && Record.Key.Generation == 2
+				&& Record.Transition == EFlecsRelevanceTransition::Exit;
+		}));
 	TestTrue(TEXT("Despawn handed off"), Accept(Scheduler, Selection, 3));
 	Current.Key.Generation = 3;
 	Snapshot.Entities.Add(Current);
 	Snapshot.SimulationTick++;
 	TestTrue(TEXT("Reused ID with newer generation builds"), Index.Build(Snapshot, 100));
 	TestTrue(TEXT("New generation selects"), Scheduler.Select(Index, Client, 4, Budget, Selection));
-	TestTrue(TEXT("New generation enters"), Selection.Records.ContainsByPredicate([](const FFlecsScheduledEntity& Record)
-		{ return Record.Key.EntityId == 1 && Record.Key.Generation == 3 && Record.Transition == EFlecsRelevanceTransition::Enter; }));
+	TestTrue(
+		TEXT("New generation enters"), Selection.Records.ContainsByPredicate([](const FFlecsScheduledEntity& Record) {
+			return Record.Key.EntityId == 1 && Record.Key.Generation == 3
+				&& Record.Transition == EFlecsRelevanceTransition::Enter;
+		}));
 	TestTrue(TEXT("Reuse transitions handed off"), Accept(Scheduler, Selection, 4));
 	Snapshot.Entities[0].Key.Generation = 2;
 	Snapshot.SimulationTick++;
@@ -205,7 +217,8 @@ bool FFlecsPartialSpatialIdentityTest::RunTest(const FString& Parameters)
 	Snapshot.Entities.Add(Live);
 	Snapshot.LiveEntityKeys.Add(Live.Key);
 	FFlecsSpatialIndex Index;
-	if (!TestTrue(TEXT("Complete snapshot builds"), Index.Build(Snapshot, 100))) return false;
+	if (!TestTrue(TEXT("Complete snapshot builds"), Index.Build(Snapshot, 100)))
+		return false;
 	FFlecsPerConnectionScheduler Scheduler;
 	const FFlecsConnectionInterest Client = Interest(1, 0);
 	FFlecsRelevanceBudget Budget;
@@ -225,7 +238,8 @@ bool FFlecsPartialSpatialIdentityTest::RunTest(const FString& Parameters)
 	Snapshot.SimulationTick = 3;
 	TestTrue(TEXT("Recovered metadata builds"), Index.Build(Snapshot, 100));
 	TestTrue(TEXT("Recovered same generation selects"), Scheduler.Select(Index, Client, 1.4, Budget, Selection));
-	TestTrue(TEXT("Recovered entity updates without spurious re-entry"), Has(Selection, 1, EFlecsRelevanceTransition::Update));
+	TestTrue(TEXT("Recovered entity updates without spurious re-entry"),
+		Has(Selection, 1, EFlecsRelevanceTransition::Update));
 	TestTrue(TEXT("Recovered update handed off"), Accept(Scheduler, Selection, 1.4));
 
 	Snapshot.Entities.Reset();
@@ -233,14 +247,18 @@ bool FFlecsPartialSpatialIdentityTest::RunTest(const FString& Parameters)
 	Snapshot.SimulationTick = 4;
 	TestTrue(TEXT("Complete empty live set builds"), Index.Build(Snapshot, 100));
 	TestTrue(TEXT("Authoritative disappearance selects"), Scheduler.Select(Index, Client, 1.5, Budget, Selection));
-	TestTrue(TEXT("Only authoritative absence emits despawn"), Selection.Records.ContainsByPredicate([](const FFlecsScheduledEntity& Record)
-		{ return Record.Key.EntityId == 1 && Record.Transition == EFlecsRelevanceTransition::Exit && Record.bEntityDespawned; }));
+	TestTrue(TEXT("Only authoritative absence emits despawn"),
+		Selection.Records.ContainsByPredicate([](const FFlecsScheduledEntity& Record) {
+			return Record.Key.EntityId == 1 && Record.Transition == EFlecsRelevanceTransition::Exit
+				&& Record.bEntityDespawned;
+		}));
 	TestTrue(TEXT("Despawn handed off"), Accept(Scheduler, Selection, 1.5));
 	Snapshot.Entities.Add(Live);
 	Snapshot.LiveEntityKeys.Add(Live.Key);
 	Snapshot.SimulationTick = 5;
 	TestTrue(TEXT("Stale identity snapshot builds independently"), Index.Build(Snapshot, 100));
-	TestFalse(TEXT("Retired generation cannot return as live"), Scheduler.Select(Index, Client, 1.6, Budget, Selection));
+	TestFalse(
+		TEXT("Retired generation cannot return as live"), Scheduler.Select(Index, Client, 1.6, Budget, Selection));
 	return true;
 }
 

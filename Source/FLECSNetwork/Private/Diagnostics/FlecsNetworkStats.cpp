@@ -1,7 +1,13 @@
 #include "Diagnostics/FlecsNetworkStats.h"
-DEFINE_STAT(STAT_FlecsNetworkSelect); DEFINE_STAT(STAT_FlecsNetworkState);
-DEFINE_STAT(STAT_FlecsNetworkRelevant); DEFINE_STAT(STAT_FlecsNetworkSelected); DEFINE_STAT(STAT_FlecsNetworkDeferred);
-DEFINE_STAT(STAT_FlecsNetworkStateSent); DEFINE_STAT(STAT_FlecsNetworkStateReceived);
-DEFINE_STAT(STAT_FlecsNetworkCommandSent); DEFINE_STAT(STAT_FlecsNetworkCommandReceived);
-DEFINE_STAT(STAT_FlecsNetworkManifestSent); DEFINE_STAT(STAT_FlecsNetworkManifestReceived);
+DEFINE_STAT(STAT_FlecsNetworkSelect);
+DEFINE_STAT(STAT_FlecsNetworkState);
+DEFINE_STAT(STAT_FlecsNetworkRelevant);
+DEFINE_STAT(STAT_FlecsNetworkSelected);
+DEFINE_STAT(STAT_FlecsNetworkDeferred);
+DEFINE_STAT(STAT_FlecsNetworkStateSent);
+DEFINE_STAT(STAT_FlecsNetworkStateReceived);
+DEFINE_STAT(STAT_FlecsNetworkCommandSent);
+DEFINE_STAT(STAT_FlecsNetworkCommandReceived);
+DEFINE_STAT(STAT_FlecsNetworkManifestSent);
+DEFINE_STAT(STAT_FlecsNetworkManifestReceived);
 DEFINE_STAT(STAT_FlecsNetworkBuffers);

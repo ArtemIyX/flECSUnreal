@@ -4,5 +4,10 @@
 
 namespace FlecsModRegistry
 {
-enum class EEntryKind : uint8 { Component, EntityDefinition, Command };
+enum class EEntryKind : uint8
+{
+	Component,
+	EntityDefinition,
+	Command
+};
 }

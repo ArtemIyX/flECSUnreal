@@ -40,14 +40,14 @@ public:
 	void GetPeerSessions(TArray<FFlecsPeerSessionView>& OutSessions) const;
 	/** Register native schemas before the registry is frozen and any peer handshake starts. */
 	FlecsModRegistry::FRegistry* GetModRegistryForSetup();
-	bool RegisterTrustedPermissionRule(const FString& PermissionStableId, FFlecsTrustedPermissionRule Rule,
-	                                   FString& OutError);
+	bool RegisterTrustedPermissionRule(
+		const FString& PermissionStableId, FFlecsTrustedPermissionRule Rule, FString& OutError);
 	/** Set the optional game-thread initial-entity factory before registry freeze. */
 	bool SetPeerSpawnFactory(FFlecsPeerSpawnFactory Factory, FString& OutError);
 	/** Set an optional per-peer interest and budget provider before registry freeze. */
 	bool SetPeerInterestProvider(FFlecsPeerInterestProvider Provider, FString& OutError);
 	bool RegisterTrustedSpatialDefinition(const FString& DefinitionStableId, EFlecsTrustedSpatialPolicy Policy,
-	                                      FFlecsTrustedPositionAccessor Accessor, FString& OutError);
+		FFlecsTrustedPositionAccessor Accessor, FString& OutError);
 	bool FreezeModRegistry(uint32 ProtocolVersion, FString& OutError);
 	bool IsModRegistryFrozen() const { return bModRegistryFrozen; }
 	bool IsPeerCompatible(FConnectionIncarnation Incarnation, uint64& OutServerWorldEpoch) const;
@@ -62,8 +62,8 @@ public:
 	/** Queue an unowned authoritative spawn; SharedSpawnFinished reports completion. */
 	bool QueueSharedEntitySpawn(FFlecsPeerSpawnRequest Request, uint64& OutRequestId, FString& OutError);
 	/** Queue one peer-owned spawn; PeerSpawnFinished reports worker execution, not queue admission. */
-	bool QueuePeerEntitySpawn(FConnectionIncarnation Incarnation, FFlecsPeerSpawnRequest Request,
-		uint64& OutRequestId, FString& OutError);
+	bool QueuePeerEntitySpawn(
+		FConnectionIncarnation Incarnation, FFlecsPeerSpawnRequest Request, uint64& OutRequestId, FString& OutError);
 #if WITH_DEV_AUTOMATION_TESTS
 	/** Opt in to inspecting one registered component on the client worker after batch apply. */
 	bool SetClientInspectionComponent(const FString& StableComponentId);
@@ -103,25 +103,23 @@ private:
 	void RetryPendingClientModelReset();
 	void BindPeerChannel(FPeerSession& Session);
 	void HandleCompleteClientStateBatch(AFlecsReplicationChannel* Channel, uint64 SnapshotServerWorldEpoch,
-	                                    uint64 SnapshotRevision, uint32 SimulationTick,
-	                                    const TArray<FFlecsReplicationRecord>& Records);
-	void HandleSnapshotTransferFinished(AFlecsReplicationChannel* Channel, uint64 ServerWorldEpoch,
-	                                    uint64 TransferRevision, bool bSucceeded);
+		uint64 SnapshotRevision, uint32 SimulationTick, const TArray<FFlecsReplicationRecord>& Records);
+	void HandleSnapshotTransferFinished(
+		AFlecsReplicationChannel* Channel, uint64 ServerWorldEpoch, uint64 TransferRevision, bool bSucceeded);
 	void TryQueueDeltaAcknowledgement(FPeerSession& Session);
 	bool AdmitDiscreteCommand(AFlecsReplicationChannel* Channel, const FFlecsCommandEnvelope& Envelope);
 	void QueueContinuousCommand(AFlecsReplicationChannel* Channel, const FFlecsCommandEnvelope& Envelope);
 	void ProcessPendingChannelHandshakes();
-	void HandleManifestDescriptor(AFlecsReplicationChannel* Channel, uint64 InServerWorldEpoch,
-	                              const TArray<uint8>& Bytes);
-	void HandleManifestHandshakeFinished(AFlecsReplicationChannel* Channel, uint64 InServerWorldEpoch,
-	                                     const FString& Reason);
+	void HandleManifestDescriptor(
+		AFlecsReplicationChannel* Channel, uint64 InServerWorldEpoch, const TArray<uint8>& Bytes);
+	void HandleManifestHandshakeFinished(
+		AFlecsReplicationChannel* Channel, uint64 InServerWorldEpoch, const FString& Reason);
 	FPeerSession* FindSessionByChannel(AFlecsReplicationChannel* Channel);
 	void CloseSession(const TWeakObjectPtr<APlayerController>& Controller, bool bDestroyChannel);
 	void CloseAllSessions(bool bDestroyChannels);
 	void ProcessRequestedChannelRecreations();
-	void EmitPeerEvent(const FPeerSession& Session, EFlecsSessionEventKind Kind,
-		uint64 Revision = 0, uint32 SimulationTick = 0, uint32 Sequence = 0,
-		uint8 Result = 0, const FString& Reason = FString(),
+	void EmitPeerEvent(const FPeerSession& Session, EFlecsSessionEventKind Kind, uint64 Revision = 0,
+		uint32 SimulationTick = 0, uint32 Sequence = 0, uint8 Result = 0, const FString& Reason = FString(),
 		const FlecsSimulation::FNetworkEntityIdentity* InspectedIdentity = nullptr,
 		const TArray<uint8>* InspectedBytes = nullptr);
 	void HandleWorldAboutToDetach(UWorld& World);

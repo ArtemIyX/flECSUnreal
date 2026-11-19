@@ -54,8 +54,7 @@ bool UFlecsSubsystem::UnregisterSystem(FName SystemName)
 	const FName ScopedName = Owner->MakeWorldSystemName(SystemName);
 	FTCHARToUTF8 ConvertedName(*ScopedName.ToString());
 	const std::string WorkerName(ConvertedName.Get());
-	return Owner->SubmitWorkerCommand(ExpectedEpoch, [WorkerName](flecs::world& World)
-	{
+	return Owner->SubmitWorkerCommand(ExpectedEpoch, [WorkerName](flecs::world& World) {
 		flecs::entity Existing = World.lookup(WorkerName.c_str());
 		if (Existing.is_alive())
 		{

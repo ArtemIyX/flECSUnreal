@@ -6,8 +6,8 @@
 namespace FlecsModRegistry
 {
 struct FSessionWireEntry
-	{
-		EEntryKind Kind = EEntryKind::Component;
-		FString StableId;
-	};
+{
+	EEntryKind Kind = EEntryKind::Component;
+	FString StableId;
+};
 }

@@ -8,15 +8,16 @@
 
 namespace
 {
- TAutoConsoleVariable<int32> CVarFlecsSystemTime(TEXT("flecs.Diagnostics.SystemTime"), 0,
-  TEXT("Measure time spent inside Flecs systems (0 off, 1 on)."), ECVF_Default);
- TAutoConsoleVariable<int32> CVarFlecsWorldMemory(TEXT("flecs.Diagnostics.WorldMemory"), 0,
-  TEXT("Sample Flecs-reported world memory at most once per second (0 off, 1 on)."), ECVF_Default);
+TAutoConsoleVariable<int32> CVarFlecsSystemTime(TEXT("flecs.Diagnostics.SystemTime"), 0,
+	TEXT("Measure time spent inside Flecs systems (0 off, 1 on)."), ECVF_Default);
+TAutoConsoleVariable<int32> CVarFlecsWorldMemory(TEXT("flecs.Diagnostics.WorldMemory"), 0,
+	TEXT("Sample Flecs-reported world memory at most once per second (0 off, 1 on)."), ECVF_Default);
 }
 
 FFlecsSimulationRunner::FFlecsSimulationRunner(uint64 InEpoch, double InSimulationRateHz)
 	: Epoch(InEpoch)
-	, SimulationStepSeconds(1.0 / (FMath::IsFinite(InSimulationRateHz) ? FMath::Clamp(InSimulationRateHz, 1.0, 240.0) : 60.0))
+	, SimulationStepSeconds(
+		  1.0 / (FMath::IsFinite(InSimulationRateHz) ? FMath::Clamp(InSimulationRateHz, 1.0, 240.0) : 60.0))
 {
 	WakeEvent = FPlatformProcess::GetSynchEventFromPool(false);
 	InitializedEvent = FPlatformProcess::GetSynchEventFromPool(false);
@@ -37,14 +38,13 @@ FFlecsSimulationRunner::~FFlecsSimulationRunner()
 	}
 }
 
-bool FFlecsSimulationRunner::Start(
-	TArray<FWorkerCommand>&& InStartupCommands,
+bool FFlecsSimulationRunner::Start(TArray<FWorkerCommand>&& InStartupCommands,
 	TArray<FFlecsNamedWorkerDataPublisher>&& InStartupPublishers,
 	TArray<FFlecsNamedWorkerLifecycle>&& InStartupLifecycles)
 {
-	if (Thread || !WakeEvent || !InitializedEvent || InStartupCommands.Num() > MaxQueuedCommands ||
-		InStartupPublishers.Num() > static_cast<int32>(MaxPublicationExtractors) ||
-		InStartupLifecycles.Num() > static_cast<int32>(MaxPublicationExtractors))
+	if (Thread || !WakeEvent || !InitializedEvent || InStartupCommands.Num() > MaxQueuedCommands
+		|| InStartupPublishers.Num() > static_cast<int32>(MaxPublicationExtractors)
+		|| InStartupLifecycles.Num() > static_cast<int32>(MaxPublicationExtractors))
 	{
 		return false;
 	}
@@ -67,7 +67,8 @@ bool FFlecsSimulationRunner::Start(
 	TSet<FName> LifecycleNames;
 	for (const FFlecsNamedWorkerLifecycle& Lifecycle : InStartupLifecycles)
 	{
-		if (Lifecycle.Name.IsNone() || !Lifecycle.Startup || !Lifecycle.Shutdown || LifecycleNames.Contains(Lifecycle.Name))
+		if (Lifecycle.Name.IsNone() || !Lifecycle.Startup || !Lifecycle.Shutdown
+			|| LifecycleNames.Contains(Lifecycle.Name))
 		{
 			return false;
 		}
@@ -142,11 +143,15 @@ EFlecsWorkerCommandResult FFlecsSimulationRunner::Submit(uint64 ExpectedEpoch, F
 EFlecsWorkerCommandResult FFlecsSimulationRunner::RegisterPublisher(
 	uint64 ExpectedEpoch, FName Name, FFlecsWorkerDataPublisher&& Publisher)
 {
-	if (ExpectedEpoch != Epoch) return EFlecsWorkerCommandResult::StaleEpoch;
-	if (Name.IsNone() || !Publisher) return EFlecsWorkerCommandResult::InvalidCommand;
-	if (bStopping.load(std::memory_order_acquire)) return EFlecsWorkerCommandResult::Stopping;
+	if (ExpectedEpoch != Epoch)
+		return EFlecsWorkerCommandResult::StaleEpoch;
+	if (Name.IsNone() || !Publisher)
+		return EFlecsWorkerCommandResult::InvalidCommand;
+	if (bStopping.load(std::memory_order_acquire))
+		return EFlecsWorkerCommandResult::Stopping;
 	std::lock_guard<std::mutex> Lock(QueueMutex);
-	if (bStopping.load(std::memory_order_relaxed)) return EFlecsWorkerCommandResult::Stopping;
+	if (bStopping.load(std::memory_order_relaxed))
+		return EFlecsWorkerCommandResult::Stopping;
 	if (Commands.size() >= MaxQueuedCommands)
 	{
 		RejectedCommands.fetch_add(1, std::memory_order_relaxed);
@@ -163,11 +168,15 @@ EFlecsWorkerCommandResult FFlecsSimulationRunner::RegisterPublisher(
 
 EFlecsWorkerCommandResult FFlecsSimulationRunner::UnregisterPublisher(uint64 ExpectedEpoch, FName Name)
 {
-	if (ExpectedEpoch != Epoch) return EFlecsWorkerCommandResult::StaleEpoch;
-	if (Name.IsNone()) return EFlecsWorkerCommandResult::InvalidCommand;
-	if (bStopping.load(std::memory_order_acquire)) return EFlecsWorkerCommandResult::Stopping;
+	if (ExpectedEpoch != Epoch)
+		return EFlecsWorkerCommandResult::StaleEpoch;
+	if (Name.IsNone())
+		return EFlecsWorkerCommandResult::InvalidCommand;
+	if (bStopping.load(std::memory_order_acquire))
+		return EFlecsWorkerCommandResult::Stopping;
 	std::lock_guard<std::mutex> Lock(QueueMutex);
-	if (bStopping.load(std::memory_order_relaxed)) return EFlecsWorkerCommandResult::Stopping;
+	if (bStopping.load(std::memory_order_relaxed))
+		return EFlecsWorkerCommandResult::Stopping;
 	if (Commands.size() >= MaxQueuedCommands)
 	{
 		RejectedCommands.fetch_add(1, std::memory_order_relaxed);
@@ -181,14 +190,18 @@ EFlecsWorkerCommandResult FFlecsSimulationRunner::UnregisterPublisher(uint64 Exp
 	return EFlecsWorkerCommandResult::Accepted;
 }
 
-EFlecsWorkerCommandResult FFlecsSimulationRunner::RegisterLifecycle(uint64 ExpectedEpoch, FName Name,
-	FFlecsWorkerStartupCallback&& Startup, FFlecsWorkerShutdownCallback&& Shutdown)
+EFlecsWorkerCommandResult FFlecsSimulationRunner::RegisterLifecycle(
+	uint64 ExpectedEpoch, FName Name, FFlecsWorkerStartupCallback&& Startup, FFlecsWorkerShutdownCallback&& Shutdown)
 {
-	if (ExpectedEpoch != Epoch) return EFlecsWorkerCommandResult::StaleEpoch;
-	if (Name.IsNone() || !Startup || !Shutdown) return EFlecsWorkerCommandResult::InvalidCommand;
-	if (bStopping.load(std::memory_order_acquire)) return EFlecsWorkerCommandResult::Stopping;
+	if (ExpectedEpoch != Epoch)
+		return EFlecsWorkerCommandResult::StaleEpoch;
+	if (Name.IsNone() || !Startup || !Shutdown)
+		return EFlecsWorkerCommandResult::InvalidCommand;
+	if (bStopping.load(std::memory_order_acquire))
+		return EFlecsWorkerCommandResult::Stopping;
 	std::lock_guard<std::mutex> Lock(QueueMutex);
-	if (bStopping.load(std::memory_order_relaxed)) return EFlecsWorkerCommandResult::Stopping;
+	if (bStopping.load(std::memory_order_relaxed))
+		return EFlecsWorkerCommandResult::Stopping;
 	if (Commands.size() >= MaxQueuedCommands)
 	{
 		RejectedCommands.fetch_add(1, std::memory_order_relaxed);
@@ -206,11 +219,15 @@ EFlecsWorkerCommandResult FFlecsSimulationRunner::RegisterLifecycle(uint64 Expec
 
 EFlecsWorkerCommandResult FFlecsSimulationRunner::UnregisterLifecycle(uint64 ExpectedEpoch, FName Name)
 {
-	if (ExpectedEpoch != Epoch) return EFlecsWorkerCommandResult::StaleEpoch;
-	if (Name.IsNone()) return EFlecsWorkerCommandResult::InvalidCommand;
-	if (bStopping.load(std::memory_order_acquire)) return EFlecsWorkerCommandResult::Stopping;
+	if (ExpectedEpoch != Epoch)
+		return EFlecsWorkerCommandResult::StaleEpoch;
+	if (Name.IsNone())
+		return EFlecsWorkerCommandResult::InvalidCommand;
+	if (bStopping.load(std::memory_order_acquire))
+		return EFlecsWorkerCommandResult::Stopping;
 	std::lock_guard<std::mutex> Lock(QueueMutex);
-	if (bStopping.load(std::memory_order_relaxed)) return EFlecsWorkerCommandResult::Stopping;
+	if (bStopping.load(std::memory_order_relaxed))
+		return EFlecsWorkerCommandResult::Stopping;
 	if (Commands.size() >= MaxQueuedCommands)
 	{
 		RejectedCommands.fetch_add(1, std::memory_order_relaxed);
@@ -236,7 +253,8 @@ TSharedPtr<const FFlecsSimulationPublication, ESPMode::ThreadSafe> FFlecsSimulat
 	return Publication;
 }
 
-TSharedPtr<const FFlecsSimulationDataPublication, ESPMode::ThreadSafe> FFlecsSimulationRunner::GetDataPublication() const
+TSharedPtr<const FFlecsSimulationDataPublication, ESPMode::ThreadSafe>
+FFlecsSimulationRunner::GetDataPublication() const
 {
 	FScopeLock Lock(&PublicationMutex);
 	return DataPublication;
@@ -324,16 +342,28 @@ uint32 FFlecsSimulationRunner::Run()
 			SCOPE_CYCLE_COUNTER(STAT_FlecsWorldProgress);
 			World.progress(static_cast<ecs_ftime_t>(SimulationStepSeconds));
 		}
-		LastSystemSeconds = bMeasureSystems ? FMath::Max(0.0, static_cast<double>(ecs_get_world_info(World.c_ptr())->system_time_total) - PreviousSystemTime) : 0.0;
-		if (bMeasureSystems) { INC_FLOAT_STAT_BY(STAT_FlecsSystemMilliseconds, LastSystemSeconds * 1000.0); }
+		LastSystemSeconds =
+			bMeasureSystems ? FMath::Max(0.0, static_cast<double>(ecs_get_world_info(World.c_ptr())->system_time_total)
+												  - PreviousSystemTime)
+							: 0.0;
+		if (bMeasureSystems)
+		{
+			INC_FLOAT_STAT_BY(STAT_FlecsSystemMilliseconds, LastSystemSeconds * 1000.0);
+		}
 		if (CVarFlecsWorldMemory.GetValueOnAnyThread() != 0)
 		{
 			if (StartTime >= NextMemorySampleSeconds)
 			{
 				const ecs_size_t Measured = ecs_memory_get(World.c_ptr());
 				const uint64 Sample = Measured >= 0 ? static_cast<uint64>(Measured) : 0;
-				if (Sample >= WorldMemoryBytes) { INC_MEMORY_STAT_BY(STAT_FlecsWorldMemory, Sample - WorldMemoryBytes); }
-				else { DEC_MEMORY_STAT_BY(STAT_FlecsWorldMemory, WorldMemoryBytes - Sample); }
+				if (Sample >= WorldMemoryBytes)
+				{
+					INC_MEMORY_STAT_BY(STAT_FlecsWorldMemory, Sample - WorldMemoryBytes);
+				}
+				else
+				{
+					DEC_MEMORY_STAT_BY(STAT_FlecsWorldMemory, WorldMemoryBytes - Sample);
+				}
 				WorldMemoryBytes = Sample;
 				bWorldMemoryAvailable = Measured >= 0;
 				NextMemorySampleSeconds = StartTime + 1.0;
@@ -366,7 +396,8 @@ uint32 FFlecsSimulationRunner::Run()
 			{
 				const uint64 SkippedDeadlines = static_cast<uint64>(Lateness / SimulationStepSeconds) + 1;
 				MissedDeadlines += SkippedDeadlines;
-				INC_DWORD_STAT_BY(STAT_FlecsMissedDeadlines, static_cast<uint32>(FMath::Min<uint64>(SkippedDeadlines, MAX_uint32)));
+				INC_DWORD_STAT_BY(
+					STAT_FlecsMissedDeadlines, static_cast<uint32>(FMath::Min<uint64>(SkippedDeadlines, MAX_uint32)));
 				Deadline += SkippedDeadlines * SimulationStepSeconds;
 				bUsedImmediateCatchUp = false;
 			}
@@ -381,7 +412,10 @@ uint32 FFlecsSimulationRunner::Run()
 	// controls (and discard gameplay commands) before paired shutdown callbacks.
 	ProcessQueuedWork(World, MaxQueuedCommands, true);
 	ShutdownLifecycles(World);
-	if (bWorldMemoryAvailable) { DEC_MEMORY_STAT_BY(STAT_FlecsWorldMemory, WorldMemoryBytes); }
+	if (bWorldMemoryAvailable)
+	{
+		DEC_MEMORY_STAT_BY(STAT_FlecsWorldMemory, WorldMemoryBytes);
+	}
 	DEC_MEMORY_STAT_BY(STAT_FlecsPublicationMemory, PublicationAllocatedBytes);
 	return 0;
 }
@@ -394,7 +428,8 @@ uint64 FFlecsSimulationRunner::ProcessQueuedWork(flecs::world& World, uint64 Max
 		FQueuedCommand Work;
 		{
 			std::lock_guard<std::mutex> Lock(QueueMutex);
-			if (Commands.empty()) break;
+			if (Commands.empty())
+				break;
 			Work = MoveTemp(Commands.front());
 			Commands.pop_front();
 		}
@@ -409,44 +444,48 @@ void FFlecsSimulationRunner::ApplyQueuedWork(flecs::world& World, FQueuedCommand
 	check(FPlatformTLS::GetCurrentThreadId() == OwnerThreadId);
 	switch (Work.Kind)
 	{
-	case FQueuedCommand::EKind::Command:
-		if (!bShutdownDrain && Work.Callback) Work.Callback(World);
-		break;
-	case FQueuedCommand::EKind::AddPublisher:
-		if (Work.Publisher && (DataPublishers.Contains(Work.Name) || DataPublishers.Num() < static_cast<int32>(MaxPublicationExtractors)))
-		{
-			DataPublishers.Add(Work.Name, MoveTemp(Work.Publisher));
-		}
-		else
-		{
-			RejectedCommands.fetch_add(1, std::memory_order_relaxed);
-		}
-		break;
-	case FQueuedCommand::EKind::RemovePublisher:
-		DataPublishers.Remove(Work.Name);
-		break;
-	case FQueuedCommand::EKind::AddLifecycle:
-		if (!Work.Startup || !Work.Shutdown) break;
-		if (FFlecsWorkerShutdownCallback* Existing = ActiveLifecycles.Find(Work.Name))
-		{
-			(*Existing)(World, Epoch);
-			ActiveLifecycles.Remove(Work.Name);
-		}
-		if (ActiveLifecycles.Num() >= static_cast<int32>(MaxPublicationExtractors))
-		{
-			RejectedCommands.fetch_add(1, std::memory_order_relaxed);
+		case FQueuedCommand::EKind::Command:
+			if (!bShutdownDrain && Work.Callback)
+				Work.Callback(World);
 			break;
-		}
-		Work.Startup(World, Epoch);
-		ActiveLifecycles.Add(Work.Name, MoveTemp(Work.Shutdown));
-		break;
-	case FQueuedCommand::EKind::RemoveLifecycle:
-		if (FFlecsWorkerShutdownCallback* Existing = ActiveLifecycles.Find(Work.Name))
-		{
-			(*Existing)(World, Epoch);
-			ActiveLifecycles.Remove(Work.Name);
-		}
-		break;
+		case FQueuedCommand::EKind::AddPublisher:
+			if (Work.Publisher
+				&& (DataPublishers.Contains(Work.Name)
+					|| DataPublishers.Num() < static_cast<int32>(MaxPublicationExtractors)))
+			{
+				DataPublishers.Add(Work.Name, MoveTemp(Work.Publisher));
+			}
+			else
+			{
+				RejectedCommands.fetch_add(1, std::memory_order_relaxed);
+			}
+			break;
+		case FQueuedCommand::EKind::RemovePublisher:
+			DataPublishers.Remove(Work.Name);
+			break;
+		case FQueuedCommand::EKind::AddLifecycle:
+			if (!Work.Startup || !Work.Shutdown)
+				break;
+			if (FFlecsWorkerShutdownCallback* Existing = ActiveLifecycles.Find(Work.Name))
+			{
+				(*Existing)(World, Epoch);
+				ActiveLifecycles.Remove(Work.Name);
+			}
+			if (ActiveLifecycles.Num() >= static_cast<int32>(MaxPublicationExtractors))
+			{
+				RejectedCommands.fetch_add(1, std::memory_order_relaxed);
+				break;
+			}
+			Work.Startup(World, Epoch);
+			ActiveLifecycles.Add(Work.Name, MoveTemp(Work.Shutdown));
+			break;
+		case FQueuedCommand::EKind::RemoveLifecycle:
+			if (FFlecsWorkerShutdownCallback* Existing = ActiveLifecycles.Find(Work.Name))
+			{
+				(*Existing)(World, Epoch);
+				ActiveLifecycles.Remove(Work.Name);
+			}
+			break;
 	}
 }
 
@@ -506,7 +545,8 @@ void FFlecsSimulationRunner::Publish(double StepSeconds)
 		INC_DWORD_STAT_BY(STAT_FlecsQueueDepth, NewPublication->QueueDepth);
 		if (!Commands.empty())
 		{
-			NewPublication->OldestCommandAgeSeconds = FMath::Max(0.0, FPlatformTime::Seconds() - Commands.front().EnqueuedAt);
+			NewPublication->OldestCommandAgeSeconds =
+				FMath::Max(0.0, FPlatformTime::Seconds() - Commands.front().EnqueuedAt);
 		}
 	}
 	FScopeLock Lock(&PublicationMutex);
@@ -534,9 +574,16 @@ void FFlecsSimulationRunner::PublishData(flecs::world& World)
 	NewDataPublication->RejectedItems = Builder.GetRejectedItems();
 	NewDataPublication->Items = Builder.TakeItems();
 	uint64 NewAllocatedBytes = sizeof(FFlecsSimulationDataPublication) + NewDataPublication->Items.GetAllocatedSize();
-	for (const FFlecsSimulationDataItem& Item : NewDataPublication->Items) NewAllocatedBytes += Item.Payload.GetAllocatedSize();
-	if (NewAllocatedBytes >= PublicationAllocatedBytes) { INC_MEMORY_STAT_BY(STAT_FlecsPublicationMemory, NewAllocatedBytes - PublicationAllocatedBytes); }
-	else { DEC_MEMORY_STAT_BY(STAT_FlecsPublicationMemory, PublicationAllocatedBytes - NewAllocatedBytes); }
+	for (const FFlecsSimulationDataItem& Item : NewDataPublication->Items)
+		NewAllocatedBytes += Item.Payload.GetAllocatedSize();
+	if (NewAllocatedBytes >= PublicationAllocatedBytes)
+	{
+		INC_MEMORY_STAT_BY(STAT_FlecsPublicationMemory, NewAllocatedBytes - PublicationAllocatedBytes);
+	}
+	else
+	{
+		DEC_MEMORY_STAT_BY(STAT_FlecsPublicationMemory, PublicationAllocatedBytes - NewAllocatedBytes);
+	}
 	PublicationAllocatedBytes = NewAllocatedBytes;
 	INC_DWORD_STAT_BY(STAT_FlecsPublicationItems, PublishedDataItems);
 	FScopeLock Lock(&PublicationMutex);

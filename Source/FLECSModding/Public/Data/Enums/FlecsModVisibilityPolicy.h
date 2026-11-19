@@ -4,5 +4,10 @@
 
 namespace FlecsModRegistry
 {
-enum class EVisibilityPolicy : uint8 { Relevant, OwnerOnly, Always };
+enum class EVisibilityPolicy : uint8
+{
+	Relevant,
+	OwnerOnly,
+	Always
+};
 }

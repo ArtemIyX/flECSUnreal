@@ -47,7 +47,8 @@ struct FLECSNETWORK_API FFlecsBoundedPayload
 
 	bool Append(const uint8* Source, int32 SourceBytes)
 	{
-		if (!IsValid() || SourceBytes < 0 || SourceBytes > Capacity - NumBytes || (SourceBytes > 0 && Source == nullptr))
+		if (!IsValid() || SourceBytes < 0 || SourceBytes > Capacity - NumBytes
+			|| (SourceBytes > 0 && Source == nullptr))
 		{
 			NumBytes = static_cast<uint16>(Capacity + 1);
 			return false;
@@ -78,7 +79,7 @@ struct FLECSNETWORK_API FFlecsBoundedPayload
 
 	friend bool operator==(const FFlecsBoundedPayload& A, const FFlecsBoundedPayload& B)
 	{
-		return A.IsValid() && B.IsValid() && A.NumBytes == B.NumBytes &&
-			(A.NumBytes == 0 || FMemory::Memcmp(A.Bytes, B.Bytes, A.NumBytes) == 0);
+		return A.IsValid() && B.IsValid() && A.NumBytes == B.NumBytes
+			&& (A.NumBytes == 0 || FMemory::Memcmp(A.Bytes, B.Bytes, A.NumBytes) == 0);
 	}
 };

@@ -40,15 +40,15 @@ public:
 	 * Active changes take effect at the next fixed-step boundary. Queue saturation
 	 * leaves the prior registration unchanged. The callback runs on the worker and
 	 * must not access UObjects or connection state. */
-	EFlecsWorkerCommandResult RegisterPersistentDataPublisher(uint64 ExpectedEpoch, FName Name,
-		FFlecsWorkerDataPublisher&& Publisher);
+	EFlecsWorkerCommandResult RegisterPersistentDataPublisher(
+		uint64 ExpectedEpoch, FName Name, FFlecsWorkerDataPublisher&& Publisher);
 	/** Remove a publisher at the next step boundary. Zero is valid only before attach;
 	 * active callers must supply their expected local attachment epoch. */
 	EFlecsWorkerCommandResult UnregisterPersistentDataPublisher(uint64 ExpectedEpoch, FName Name);
 	/** Install a paired worker-only lifecycle callback. Startup runs before the first
 	 * progress call; shutdown runs exactly once on the worker before world destruction. */
-	EFlecsWorkerCommandResult RegisterPersistentWorkerLifecycle(uint64 ExpectedEpoch, FName Name,
-		FFlecsWorkerStartupCallback Startup, FFlecsWorkerShutdownCallback Shutdown);
+	EFlecsWorkerCommandResult RegisterPersistentWorkerLifecycle(
+		uint64 ExpectedEpoch, FName Name, FFlecsWorkerStartupCallback Startup, FFlecsWorkerShutdownCallback Shutdown);
 	EFlecsWorkerCommandResult UnregisterPersistentWorkerLifecycle(uint64 ExpectedEpoch, FName Name);
 	TSharedPtr<const FFlecsSimulationPublication, ESPMode::ThreadSafe> GetPublication() const;
 	TSharedPtr<const FFlecsSimulationDataPublication, ESPMode::ThreadSafe> GetDataPublication() const;
@@ -66,17 +66,15 @@ public:
 		}
 		FTCHARToUTF8 ConvertedName(*SystemName.ToString());
 		const std::string WorkerName(ConvertedName.Get());
-		return RegisterPersistentWorkerCommand(SystemName, [WorkerName, Callback = Forward<FuncType>(Func)](flecs::world& World) mutable
-		{
-			flecs::entity Existing = World.lookup(WorkerName.c_str());
-			if (Existing.is_alive())
-			{
-				Existing.destruct();
-			}
-			World.system<Components...>(WorkerName.c_str())
-				.kind(flecs::OnUpdate)
-				.each(MoveTemp(Callback));
-		});
+		return RegisterPersistentWorkerCommand(
+			SystemName, [WorkerName, Callback = Forward<FuncType>(Func)](flecs::world& World) mutable {
+				flecs::entity Existing = World.lookup(WorkerName.c_str());
+				if (Existing.is_alive())
+				{
+					Existing.destruct();
+				}
+				World.system<Components...>(WorkerName.c_str()).kind(flecs::OnUpdate).each(MoveTemp(Callback));
+			});
 	}
 
 private:

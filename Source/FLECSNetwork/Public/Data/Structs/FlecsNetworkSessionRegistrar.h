@@ -11,7 +11,8 @@ struct FFlecsNetworkSessionRegistrar
 {
 	FlecsModRegistry::FRegistry& Registry;
 	TFunctionRef<bool(const FString&, FFlecsTrustedPermissionRule, FString&)> RegisterPermission;
-	TFunctionRef<bool(const FString&, EFlecsTrustedSpatialPolicy, FFlecsTrustedPositionAccessor, FString&)> RegisterSpatial;
+	TFunctionRef<bool(const FString&, EFlecsTrustedSpatialPolicy, FFlecsTrustedPositionAccessor, FString&)>
+		RegisterSpatial;
 	TFunctionRef<bool(FFlecsPeerSpawnFactory, FString&)> SetPeerSpawnFactory;
 	/** Optional setter; configured providers run on the game thread before each selection. */
 	TFunction<bool(FFlecsPeerInterestProvider, FString&)> SetPeerInterestProvider;

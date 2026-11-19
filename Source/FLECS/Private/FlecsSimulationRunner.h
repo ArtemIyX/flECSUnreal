@@ -17,7 +17,14 @@ public:
 	using FWorkerCommand = FFlecsWorkerCommand;
 	struct FQueuedCommand
 	{
-		enum class EKind : uint8 { Command, AddPublisher, RemovePublisher, AddLifecycle, RemoveLifecycle } Kind = EKind::Command;
+		enum class EKind : uint8
+		{
+			Command,
+			AddPublisher,
+			RemovePublisher,
+			AddLifecycle,
+			RemoveLifecycle
+		} Kind = EKind::Command;
 		FWorkerCommand Callback;
 		FName Name;
 		FFlecsWorkerDataPublisher Publisher;
@@ -43,17 +50,23 @@ public:
 		NamedPublishers.Reserve(InPublishers.Num());
 		for (int32 Index = 0; Index < InPublishers.Num(); ++Index)
 		{
-			NamedPublishers.Add({ FName(*FString::Printf(TEXT("LegacyPublisher_%d"), Index)), MoveTemp(InPublishers[Index]) });
+			NamedPublishers.Add(
+				{FName(*FString::Printf(TEXT("LegacyPublisher_%d"), Index)), MoveTemp(InPublishers[Index])});
 		}
 		return Start(MoveTemp(InCommands), MoveTemp(NamedPublishers), TArray<FFlecsNamedWorkerLifecycle>());
 	}
-	bool Start() { return Start(TArray<FWorkerCommand>(), TArray<FFlecsNamedWorkerDataPublisher>(), TArray<FFlecsNamedWorkerLifecycle>()); }
+	bool Start()
+	{
+		return Start(
+			TArray<FWorkerCommand>(), TArray<FFlecsNamedWorkerDataPublisher>(), TArray<FFlecsNamedWorkerLifecycle>());
+	}
 	void StopAndJoin();
 	EFlecsWorkerCommandResult Submit(uint64 ExpectedEpoch, FWorkerCommand&& Command);
-	EFlecsWorkerCommandResult RegisterPublisher(uint64 ExpectedEpoch, FName Name, FFlecsWorkerDataPublisher&& Publisher);
+	EFlecsWorkerCommandResult RegisterPublisher(
+		uint64 ExpectedEpoch, FName Name, FFlecsWorkerDataPublisher&& Publisher);
 	EFlecsWorkerCommandResult UnregisterPublisher(uint64 ExpectedEpoch, FName Name);
-	EFlecsWorkerCommandResult RegisterLifecycle(uint64 ExpectedEpoch, FName Name,
-		FFlecsWorkerStartupCallback&& Startup, FFlecsWorkerShutdownCallback&& Shutdown);
+	EFlecsWorkerCommandResult RegisterLifecycle(uint64 ExpectedEpoch, FName Name, FFlecsWorkerStartupCallback&& Startup,
+		FFlecsWorkerShutdownCallback&& Shutdown);
 	EFlecsWorkerCommandResult UnregisterLifecycle(uint64 ExpectedEpoch, FName Name);
 	bool Submit(FWorkerCommand&& Command)
 	{
@@ -84,11 +97,11 @@ private:
 	TArray<FFlecsNamedWorkerLifecycle> StartupLifecycles;
 	TMap<FName, FFlecsWorkerDataPublisher> DataPublishers;
 	TMap<FName, FFlecsWorkerShutdownCallback> ActiveLifecycles;
-	std::atomic<bool> bInitializationSucceeded{ false };
+	std::atomic<bool> bInitializationSucceeded{false};
 	std::mutex QueueMutex;
 	std::deque<FQueuedCommand> Commands;
-	std::atomic<bool> bStopping{ false };
-	std::atomic<bool> bPaused{ false };
+	std::atomic<bool> bStopping{false};
+	std::atomic<bool> bPaused{false};
 	mutable FCriticalSection PublicationMutex;
 	TSharedPtr<const FFlecsSimulationPublication, ESPMode::ThreadSafe> Publication;
 	TSharedPtr<const FFlecsSimulationDataPublication, ESPMode::ThreadSafe> DataPublication;
@@ -105,7 +118,7 @@ private:
 	double LastSystemSeconds = 0.0;
 	bool bSystemTimeAvailable = false;
 	uint64 RejectedDataItems = 0;
-	std::atomic<uint64> RejectedCommands{ 0 };
+	std::atomic<uint64> RejectedCommands{0};
 	double MaxStepSeconds = 0.0;
 	double LastDeadlineLatenessSeconds = 0.0;
 	uint32 OwnerThreadId = 0;

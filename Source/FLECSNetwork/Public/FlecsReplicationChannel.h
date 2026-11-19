@@ -18,7 +18,8 @@ class AFlecsReplicationChannel;
 class APlayerController;
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FFlecsReplicationSnapshotReceived, const TArray<FFlecsReplicationRecord>&);
-DECLARE_MULTICAST_DELEGATE_FourParams(FFlecsCompleteStateBatchReceived, uint64, uint64, uint32, const TArray<FFlecsReplicationRecord>&);
+DECLARE_MULTICAST_DELEGATE_FourParams(
+	FFlecsCompleteStateBatchReceived, uint64, uint64, uint32, const TArray<FFlecsReplicationRecord>&);
 DECLARE_MULTICAST_DELEGATE_ThreeParams(FFlecsSnapshotTransferFinished, uint64, uint64, bool);
 DECLARE_MULTICAST_DELEGATE_OneParam(FFlecsDiscreteCommandReceived, const FFlecsCommandEnvelope&);
 DECLARE_MULTICAST_DELEGATE_OneParam(FFlecsContinuousCommandReceived, const FFlecsCommandEnvelope&);
@@ -28,18 +29,18 @@ DECLARE_MULTICAST_DELEGATE_TwoParams(FFlecsServerTickHeartbeatReceived, uint64, 
 /** Result codes are transport admission outcomes; AcceptedForWorker does not claim command execution. */
 namespace FlecsNetworkCommandResult
 {
-	constexpr uint8 AcceptedForWorker = 0;
-	constexpr uint8 RejectedInvalid = 1;
-	constexpr uint8 RejectedSequence = 2;
-	constexpr uint8 RejectedTickWindow = 3;
-	constexpr uint8 RejectedRateLimit = 4;
-	constexpr uint8 RejectedWorkerUnavailable = 5;
-	constexpr uint8 ExecutionAccepted = 6;
-	constexpr uint8 ExecutionRejectedUnauthorized = 7;
-	constexpr uint8 ExecutionRejectedStale = 8;
-	constexpr uint8 ExecutionRejectedUnknownSchema = 9;
-	constexpr uint8 ExecutionFailed = 10;
-	constexpr uint8 ExecutionResultExpired = 11;
+constexpr uint8 AcceptedForWorker = 0;
+constexpr uint8 RejectedInvalid = 1;
+constexpr uint8 RejectedSequence = 2;
+constexpr uint8 RejectedTickWindow = 3;
+constexpr uint8 RejectedRateLimit = 4;
+constexpr uint8 RejectedWorkerUnavailable = 5;
+constexpr uint8 ExecutionAccepted = 6;
+constexpr uint8 ExecutionRejectedUnauthorized = 7;
+constexpr uint8 ExecutionRejectedStale = 8;
+constexpr uint8 ExecutionRejectedUnknownSchema = 9;
+constexpr uint8 ExecutionFailed = 10;
+constexpr uint8 ExecutionResultExpired = 11;
 }
 
 using FFlecsDiscreteCommandAdmission = TFunction<bool(const FFlecsCommandEnvelope&)>;
@@ -74,7 +75,8 @@ public:
 	uint64 GetDiagnosticsAllocatedBytes() const;
 
 	/** Start one ACK-paced selected-state update batch. Limits are 16,384 records and 4 MiB encoded budget; overflow fails closed. */
-	bool PublishUpdateBatch(uint64 InWorldEpoch, const TArray<FFlecsReplicationRecord>& Records, uint32 InSimulationTick);
+	bool PublishUpdateBatch(
+		uint64 InWorldEpoch, const TArray<FFlecsReplicationRecord>& Records, uint32 InSimulationTick);
 	/** Game-thread diagnostic for the most recent rejected PublishUpdateBatch call, bounded to 256 characters. */
 	FString GetLastUpdateBatchRejectionReason() const;
 	/** True while this server channel is waiting for an owner ACK; callers should pause new selections. */
@@ -114,10 +116,10 @@ protected:
 	UPROPERTY(Replicated)
 	FFlecsReplicationRecordArray ReplicatedState;
 
-	UPROPERTY(ReplicatedUsing=OnRep_WorldEpoch)
+	UPROPERTY(ReplicatedUsing = OnRep_WorldEpoch)
 	uint64 ReplicatedWorldEpoch = 0;
 
-	UPROPERTY(ReplicatedUsing=OnRep_ServerTickHeartbeat)
+	UPROPERTY(ReplicatedUsing = OnRep_ServerTickHeartbeat)
 	FFlecsServerTickHeartbeat ReplicatedServerTickHeartbeat;
 
 	UFUNCTION()
@@ -136,14 +138,15 @@ private:
 	void RecordOutgoingCommand(const FFlecsCommandEnvelope& Envelope, bool bIsDiscrete);
 	void SendDiscreteCommandResult(uint64 WorldEpoch, uint32 Sequence, uint8 ResultCode);
 	void PumpSnapshotWindow();
-	void HandleSnapshotWindowAcknowledgement(uint64 ServerWorldEpoch, uint32 TransferId, uint64 SnapshotRevision,
-		uint16 HighestRecordIndex, bool bAccepted);
-	void SendSnapshotWindowAcknowledgement(uint64 ServerWorldEpoch, uint32 TransferId, uint64 SnapshotRevision,
-		uint16 HighestRecordIndex, bool bAccepted);
+	void HandleSnapshotWindowAcknowledgement(
+		uint64 ServerWorldEpoch, uint32 TransferId, uint64 SnapshotRevision, uint16 HighestRecordIndex, bool bAccepted);
+	void SendSnapshotWindowAcknowledgement(
+		uint64 ServerWorldEpoch, uint32 TransferId, uint64 SnapshotRevision, uint16 HighestRecordIndex, bool bAccepted);
 	void FailSnapshotTransfer(uint64 ServerWorldEpoch, const FString& Reason);
 	void SendManifestChunks(uint64 ServerWorldEpoch, const TArray<uint8>& Bytes, bool bToClient);
 	void PumpManifestChunkWindow();
-	void HandleManifestChunkAcknowledgement(uint64 ServerWorldEpoch, uint32 TransferId, uint16 HighestContiguousChunk, bool bAccepted);
+	void HandleManifestChunkAcknowledgement(
+		uint64 ServerWorldEpoch, uint32 TransferId, uint16 HighestContiguousChunk, bool bAccepted);
 	void SendManifestChunkAcknowledgement(const FFlecsManifestChunk& Chunk, bool bToServer);
 	bool ReceiveManifestChunk(const FFlecsManifestChunk& Chunk, TArray<uint8>& OutCompleteDescriptor);
 	void HandleManifestTimeout();
@@ -164,9 +167,11 @@ private:
 	UFUNCTION(Client, Reliable)
 	void ClientDiscreteCommandResult(uint64 WorldEpoch, uint32 Sequence, uint8 ResultCode);
 	UFUNCTION(Server, Reliable)
-	void ServerAcknowledgeManifestChunkWindow(uint64 ServerWorldEpoch, uint32 TransferId, uint16 HighestContiguousChunk, bool bAccepted);
+	void ServerAcknowledgeManifestChunkWindow(
+		uint64 ServerWorldEpoch, uint32 TransferId, uint16 HighestContiguousChunk, bool bAccepted);
 	UFUNCTION(Client, Reliable)
-	void ClientAcknowledgeManifestChunkWindow(uint64 ServerWorldEpoch, uint32 TransferId, uint16 HighestContiguousChunk, bool bAccepted);
+	void ClientAcknowledgeManifestChunkWindow(
+		uint64 ServerWorldEpoch, uint32 TransferId, uint16 HighestContiguousChunk, bool bAccepted);
 	UFUNCTION(Server, Reliable)
 	void ServerAcknowledgeSnapshotWindow(uint64 ServerWorldEpoch, uint32 TransferId, uint64 SnapshotRevision,
 		uint16 HighestContiguousRecordIndex, bool bAccepted);

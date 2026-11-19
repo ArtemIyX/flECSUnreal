@@ -73,4 +73,3 @@ private:
 	uint32 TotalBytes = 0;
 	uint32 RejectedItems = 0;
 };
-

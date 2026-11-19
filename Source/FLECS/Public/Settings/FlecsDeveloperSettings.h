@@ -5,7 +5,7 @@
 #include "Engine/DeveloperSettings.h"
 #include "FlecsDeveloperSettings.generated.h"
 
-UCLASS(Config=Game, DefaultConfig, meta=(DisplayName="FLECS"))
+UCLASS(Config = Game, DefaultConfig, meta = (DisplayName = "FLECS"))
 class FLECS_API UFlecsDeveloperSettings : public UDeveloperSettings
 {
 	GENERATED_BODY()
@@ -13,17 +13,15 @@ class FLECS_API UFlecsDeveloperSettings : public UDeveloperSettings
 public:
 	UFlecsDeveloperSettings();
 
-	virtual FName GetCategoryName() const override
-	{
-		return FName(TEXT("Plugins"));
-	}
+	virtual FName GetCategoryName() const override { return FName(TEXT("Plugins")); }
 
 	/** Fixed worker simulation steps per second. Takes effect when the world is attached. */
-	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category="Simulation", meta=(ClampMin="1.0", ClampMax="240.0", Units="Hz"))
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Simulation",
+		meta = (ClampMin = "1.0", ClampMax = "240.0", Units = "Hz"))
 	float SimulationRateHz = 60.0f;
 
 	/** Increasing distance thresholds in centimeters and their maximum replication rates in Hz.
 	 * The final distance is the relevance range. At most four tiers are supported. */
-	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category="Networking", meta=(TitleProperty="MaxDistance"))
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Networking", meta = (TitleProperty = "MaxDistance"))
 	TArray<FFlecsDistanceUpdateRate> DistanceUpdateRates;
 };

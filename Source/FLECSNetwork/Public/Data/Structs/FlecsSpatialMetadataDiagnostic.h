@@ -7,10 +7,10 @@
 namespace FlecsSimulation
 {
 struct FSpatialMetadataDiagnostic
-	{
-		FNetworkEntityIdentity Identity;
-		ESpatialMetadataDiagnosticCode Code = ESpatialMetadataDiagnosticCode::MissingDefinitionPolicy;
-		/** Nonzero only for the final bounded truncation summary entry. */
-		uint32 OmittedDiagnosticCount = 0;
-	};
+{
+	FNetworkEntityIdentity Identity;
+	ESpatialMetadataDiagnosticCode Code = ESpatialMetadataDiagnosticCode::MissingDefinitionPolicy;
+	/** Nonzero only for the final bounded truncation summary entry. */
+	uint32 OmittedDiagnosticCount = 0;
+};
 }

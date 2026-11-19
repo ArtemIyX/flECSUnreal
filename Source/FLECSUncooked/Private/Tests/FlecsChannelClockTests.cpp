@@ -27,9 +27,14 @@ bool FFlecsChannelClockTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
 	UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
-	if (!TestNotNull(TEXT("Create transient test world"), World)) return false;
+	if (!TestNotNull(TEXT("Create transient test world"), World))
+		return false;
 	AFlecsReplicationChannel* Channel = World->SpawnActor<AFlecsReplicationChannel>();
-	if (!TestNotNull(TEXT("Spawn authority channel"), Channel)) { World->DestroyWorld(false); return false; }
+	if (!TestNotNull(TEXT("Spawn authority channel"), Channel))
+	{
+		World->DestroyWorld(false);
+		return false;
+	}
 	FFlecsReplicationChannelTestAccessor::ValidateServer(*Channel, 9);
 	FFlecsReplicationRecord Record;
 	Record.WorldEpoch = 9;
@@ -38,7 +43,7 @@ bool FFlecsChannelClockTest::RunTest(const FString& Parameters)
 	Record.DefinitionWireId = 1;
 	Record.SourceSimulationTick = 100;
 	Record.Operation = 3; // Entity create.
-	TArray<FFlecsReplicationRecord> Batch = { Record };
+	TArray<FFlecsReplicationRecord> Batch = {Record};
 	TestTrue(TEXT("Heartbeat tick 101 publishes"), Channel->PublishServerTickHeartbeat(9, 101));
 	TestTrue(TEXT("Earlier state tick 100 is accepted after heartbeat"), Channel->PublishUpdateBatch(9, Batch, 100));
 	TestTrue(TEXT("State waits for application ACK"), Channel->IsUpdateBatchTransferActive());

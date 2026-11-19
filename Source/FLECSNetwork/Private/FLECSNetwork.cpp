@@ -2,16 +2,10 @@
 
 #define LOCTEXT_NAMESPACE "FFLECSNetworkModule"
 
-void FFLECSNetworkModule::StartupModule()
-{
-    
-}
+void FFLECSNetworkModule::StartupModule() {}
 
-void FFLECSNetworkModule::ShutdownModule()
-{
-    
-}
+void FFLECSNetworkModule::ShutdownModule() {}
 
 #undef LOCTEXT_NAMESPACE
-    
+
 IMPLEMENT_MODULE(FFLECSNetworkModule, FLECSNetwork)

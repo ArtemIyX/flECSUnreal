@@ -16,17 +16,21 @@ bool FFlecsBoundedPayloadSerializerTest::RunTest(const FString& Parameters)
 	(void)Parameters;
 	using namespace UE::Net;
 	const FNetSerializer& Serializer = UE_NET_GET_SERIALIZER(FFlecsBoundedPayloadNetSerializer);
-	const FPropertyNetSerializerInfo* Info = FPropertyNetSerializerInfoRegistry::FindStructSerializerInfo(TEXT("FlecsBoundedPayload"));
+	const FPropertyNetSerializerInfo* Info =
+		FPropertyNetSerializerInfoRegistry::FindStructSerializerInfo(TEXT("FlecsBoundedPayload"));
 	TestTrue(TEXT("Named Iris serializer is registered"), Info && Info->GetNetSerializer(nullptr) == &Serializer);
 	alignas(16) uint8 Quantized[sizeof(FFlecsBoundedPayload) + 16] = {};
 	alignas(16) uint8 Decoded[sizeof(FFlecsBoundedPayload) + 16] = {};
-	if (!TestTrue(TEXT("Quantized state fits aligned test buffer"), Serializer.QuantizedTypeSize <= sizeof(Quantized) && Serializer.QuantizedTypeAlignment <= 16)) return false;
+	if (!TestTrue(TEXT("Quantized state fits aligned test buffer"),
+			Serializer.QuantizedTypeSize <= sizeof(Quantized) && Serializer.QuantizedTypeAlignment <= 16))
+		return false;
 
-	for (const int32 Size : { 0, 1, static_cast<int32>(FFlecsBoundedPayload::Capacity) })
+	for (const int32 Size : {0, 1, static_cast<int32>(FFlecsBoundedPayload::Capacity)})
 	{
 		TArray<uint8> Bytes;
 		Bytes.SetNumUninitialized(Size);
-		for (int32 Index = 0; Index < Size; ++Index) Bytes[Index] = static_cast<uint8>((Index * 37) & 0xff);
+		for (int32 Index = 0; Index < Size; ++Index)
+			Bytes[Index] = static_cast<uint8>((Index * 37) & 0xff);
 		FFlecsBoundedPayload Input, Output;
 		TestTrue(TEXT("Create bounded source"), Input.SetBytes(Bytes.GetData(), Bytes.Num()));
 		FMemory::Memzero(Quantized, sizeof(Quantized));

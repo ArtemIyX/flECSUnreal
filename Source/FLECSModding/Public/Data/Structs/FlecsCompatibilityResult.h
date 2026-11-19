@@ -6,9 +6,9 @@
 namespace FlecsModRegistry
 {
 struct FCompatibilityResult
-	{
-		bool bCompatible = false;
-		TArray<FString> Diagnostics;
-		FSessionMapping SessionMapping;
-	};
+{
+	bool bCompatible = false;
+	TArray<FString> Diagnostics;
+	FSessionMapping SessionMapping;
+};
 }

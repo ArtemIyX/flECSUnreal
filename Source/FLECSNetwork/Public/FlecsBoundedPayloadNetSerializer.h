@@ -4,5 +4,5 @@
 
 namespace UE::Net
 {
-	UE_NET_DECLARE_SERIALIZER(FFlecsBoundedPayloadNetSerializer, FLECSNETWORK_API);
+UE_NET_DECLARE_SERIALIZER(FFlecsBoundedPayloadNetSerializer, FLECSNETWORK_API);
 }

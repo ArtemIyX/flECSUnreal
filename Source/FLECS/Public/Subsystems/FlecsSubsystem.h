@@ -36,16 +36,14 @@ public:
 		const FName ScopedName = Owner->MakeWorldSystemName(SystemName);
 		FTCHARToUTF8 ConvertedName(*ScopedName.ToString());
 		const std::string WorkerName(ConvertedName.Get());
-		return Owner->SubmitWorkerCommand(ExpectedEpoch, [WorkerName, Callback = Forward<FuncType>(Func)](flecs::world& World) mutable
-		{
+		return Owner->SubmitWorkerCommand(ExpectedEpoch, [WorkerName, Callback = Forward<FuncType>(Func)](
+															 flecs::world& World) mutable {
 			flecs::entity Existing = World.lookup(WorkerName.c_str());
 			if (Existing.is_alive())
 			{
 				Existing.destruct();
 			}
-			World.system<Components...>(WorkerName.c_str())
-				.kind(flecs::OnUpdate)
-				.each(MoveTemp(Callback));
+			World.system<Components...>(WorkerName.c_str()).kind(flecs::OnUpdate).each(MoveTemp(Callback));
 		}) == EFlecsWorkerCommandResult::Accepted;
 	}
 
