@@ -1,8 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "flecs.h"
-#include "flecs/addons/cpp/flecs.hpp"
+#include "../../ThirdParty/flecs/Include/flecs.h"
 
 #include <functional>
 
