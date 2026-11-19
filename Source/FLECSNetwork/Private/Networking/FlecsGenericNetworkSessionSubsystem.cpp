@@ -1039,8 +1039,33 @@ void UFlecsNetworkSessionSubsystem::ProcessServerReplication()
 			}
 			Runtime.bTransferPending = true;
 			Runtime.TransferRetryCount = 0;
+#if WITH_DEV_AUTOMATION_TESTS
+			FlecsSimulation::FNetworkEntityIdentity ObservedIdentity;
+			TArray<uint8> ObservedBytes;
+			if (!ClientInspectionComponent.IsEmpty())
+			{
+				for (const FFlecsReplicationRecord& Record : Runtime.PendingWireRecords)
+				{
+					if (Record.Operation != 0) continue;
+					FlecsModRegistry::FSessionWireEntry Definition, Component;
+					if (!Session.SessionMapping.FindEntryByWireId(Record.DefinitionWireId, Definition) ||
+						Definition.Kind != FlecsModRegistry::EEntryKind::EntityDefinition ||
+						!Session.SessionMapping.FindEntryByWireId(Record.ComponentWireId, Component) ||
+						Component.Kind != FlecsModRegistry::EEntryKind::Component || Component.StableId != ClientInspectionComponent) continue;
+					ObservedIdentity.ServerWorldEpoch = Record.WorldEpoch;
+					ObservedIdentity.NetworkEntityId = Record.NetworkEntityId;
+					ObservedIdentity.Generation = Record.EntityGeneration;
+					ObservedIdentity.DefinitionStableId = Definition.StableId;
+					ObservedBytes = Record.Payload;
+					break;
+				}
+			}
+			EmitPeerEvent(Session, EFlecsSessionEventKind::ServerTransferStarted,
+				Runtime.PendingModelRevision, Runtime.PendingSimulationTick, 0, 0, FString(), &ObservedIdentity, &ObservedBytes);
+#else
 			EmitPeerEvent(Session, EFlecsSessionEventKind::ServerTransferStarted,
 				Runtime.PendingModelRevision, Runtime.PendingSimulationTick);
+#endif
 			continue;
 		}
 
