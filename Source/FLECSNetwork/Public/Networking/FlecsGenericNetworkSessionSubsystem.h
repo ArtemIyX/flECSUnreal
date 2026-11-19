@@ -136,6 +136,10 @@ private:
 	uint64 LocalAttachmentEpoch = 0;
 	uint64 ServerWorldEpoch = 0;
 	uint32 SessionProtocolVersion = 0;
+	int32 SessionMaxNetworkEntities = 5000;
+	int32 SessionMaxPeerOwnedEntities = 256;
+	uint32 SessionMaxRecordsPerPeerSelection = 128;
+	uint32 SessionMaxPayloadBytesPerPeerSelection = 64 * 1024;
 	uint64 NextSpawnRequestId = 0;
 	TSet<uint64> PendingSharedSpawns;
 	FlecsModRegistry::FRegistry ModRegistry;

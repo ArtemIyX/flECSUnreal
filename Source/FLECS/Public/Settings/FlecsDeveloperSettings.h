@@ -24,4 +24,24 @@ public:
 	 * The final distance is the relevance range. At most four tiers are supported. */
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Networking", meta = (TitleProperty = "MaxDistance"))
 	TArray<FFlecsDistanceUpdateRate> DistanceUpdateRates;
+
+	/** Maximum authoritative network entities per session. Captured when the session starts. */
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Networking|Limits",
+		meta = (ClampMin = "1", ClampMax = "5000"))
+	int32 MaxNetworkEntities = 5000;
+
+	/** Maximum network entities owned by one peer, also limited by MaxNetworkEntities. */
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Networking|Limits",
+		meta = (ClampMin = "1", ClampMax = "5000"))
+	int32 MaxPeerOwnedEntities = 256;
+
+	/** Default maximum selected entity records per peer and selection. */
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Networking|Limits",
+		meta = (ClampMin = "1", ClampMax = "16384"))
+	int32 MaxRecordsPerPeerSelection = 128;
+
+	/** Default per-peer selection budget in KiB, excluding Iris packet overhead. */
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Networking|Limits",
+		meta = (ClampMin = "1", ClampMax = "4096", Units = "KiB"))
+	int32 MaxPayloadKiBPerPeerSelection = 64;
 };

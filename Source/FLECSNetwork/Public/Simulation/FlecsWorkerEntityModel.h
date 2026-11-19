@@ -53,7 +53,8 @@ public:
 		 */
 	using FPositionAccessor = TFunction<bool(uint64 EntityToken, FVector3d& OutPosition)>;
 
-	FWorkerEntityModel(FlecsModRegistry::FRegistry& InRegistry, bool bInAuthoritative);
+	FWorkerEntityModel(FlecsModRegistry::FRegistry& InRegistry, bool bInAuthoritative,
+		int32 InMaxEntities = MaxEntities);
 	~FWorkerEntityModel();
 
 	EModelResult Initialize(
@@ -209,6 +210,7 @@ private:
 	bool IsComponentAllowed(const FString& DefinitionStableId, const FString& ComponentStableId) const;
 
 	FlecsModRegistry::FRegistry& Registry;
+	const int32 EntityLimit;
 	bool bAuthoritative = false;
 	bool bInitialized = false;
 	bool bClientSessionUsable = true;

@@ -745,4 +745,46 @@ bool FWorkerDuplicateDespawnTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FWorkerEntityCapacityTest, "Flecs.Simulation.ConfiguredEntityCapacity",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FWorkerEntityCapacityTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	TFuture<TArray<FString>> Future = Async(EAsyncExecution::Thread, []() {
+		TArray<FString> Failures;
+		FRegistry Registry;
+		FEntityDefinition Definition;
+		Definition.StableId = TEXT("test:capacity");
+		Definition.MaxInitialStateBytes = 1;
+		Definition.Create = [](uint64 Token) { return Token != 0; };
+		FString Error;
+		if (!Registry.RegisterEntityDefinition(MoveTemp(Definition), Error) || !Registry.Freeze(1, Error))
+		{
+			Failures.Add(FString::Printf(TEXT("Capacity fixture registration failed: %s"), *Error));
+			return Failures;
+		}
+		flecs::world World;
+		FWorkerEntityModel Model(Registry, true, 1);
+		if (Model.Initialize(World, 9, [](uint64, const FString&, uint64, uint32, uint16) { return true; })
+			!= EModelResult::Accepted)
+		{
+			Failures.Add(TEXT("Model initialization failed"));
+			return Failures;
+		}
+		TArray<FInitialComponent> Initial;
+		FNetworkEntityIdentity First, Second;
+		Expect(Failures, Model.SpawnAuthoritative(TEXT("test:capacity"), 1, Initial, First) == EModelResult::Accepted,
+			TEXT("First entity fits configured capacity"));
+		Expect(Failures, Model.SpawnAuthoritative(TEXT("test:capacity"), 1, Initial, Second) == EModelResult::LimitReached,
+			TEXT("Additional entity is rejected at configured capacity"));
+		Expect(Failures, Model.GetEntityCount() == 1, TEXT("Rejected spawn preserves the existing entity"));
+		Model.Shutdown();
+		return Failures;
+	});
+	for (const FString& Failure : Future.Get())
+		AddError(Failure);
+	return true;
+}
+
 #endif

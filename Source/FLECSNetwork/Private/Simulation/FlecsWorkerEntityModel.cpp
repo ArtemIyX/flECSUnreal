@@ -22,8 +22,10 @@ bool IsValidVisibility(FlecsModRegistry::EVisibilityPolicy Visibility)
 }
 }
 
-FWorkerEntityModel::FWorkerEntityModel(FlecsModRegistry::FRegistry& InRegistry, bool bInAuthoritative)
+FWorkerEntityModel::FWorkerEntityModel(FlecsModRegistry::FRegistry& InRegistry, bool bInAuthoritative,
+	int32 InMaxEntities)
 	: Registry(InRegistry)
+	, EntityLimit(FMath::Clamp(InMaxEntities, 1, MaxEntities))
 	, bAuthoritative(bInAuthoritative)
 {
 }
@@ -112,7 +114,7 @@ EModelResult FWorkerEntityModel::SpawnAuthoritative(const FString& DefinitionSta
 		return EModelResult::WrongRole;
 	if (!bAuthoritativeSessionUsable)
 		return EModelResult::SessionInvalidated;
-	if (InitialComponents.Num() > MaxComponentsPerEntity || EntitiesById.Num() >= MaxEntities)
+	if (InitialComponents.Num() > MaxComponentsPerEntity || EntitiesById.Num() >= EntityLimit)
 		return EModelResult::LimitReached;
 
 	const FlecsModRegistry::FEntityDefinition* Definition = Registry.FindEntityDefinition(DefinitionStableId);

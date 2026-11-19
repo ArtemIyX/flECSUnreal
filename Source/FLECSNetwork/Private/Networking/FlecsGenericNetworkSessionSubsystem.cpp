@@ -33,7 +33,6 @@ constexpr uint32 SpatialPublicationCompleteTypeId = 0x464c5343;
 constexpr uint32 MaxPublishedLiveIdentities = 5000;
 constexpr int32 MaxRetirementBarriersQueuedPerTick = 16;
 constexpr int32 MaxPendingRetiredIncarnations = 1024;
-constexpr int32 MaxPeerOwnedEntities = 256;
 constexpr int32 SpatialMetadataPayloadFixedBytes = 55;
 constexpr float MaxPeerInterestDistance = 1000000.0f; // Match the relevance scheduler's accepted range.
 uint64 NextServerWorldEpoch = 0;
@@ -445,6 +444,22 @@ void UFlecsNetworkSessionSubsystem::Initialize(FSubsystemCollectionBase& Collect
 {
 	Super::Initialize(Collection);
 	check(IsInGameThread());
+	if (const UFlecsDeveloperSettings* Settings = GetDefault<UFlecsDeveloperSettings>())
+	{
+		SessionMaxNetworkEntities = FMath::Clamp(Settings->MaxNetworkEntities, 1, FlecsSimulation::MaxEntities);
+		SessionMaxPeerOwnedEntities = FMath::Clamp(Settings->MaxPeerOwnedEntities, 1, SessionMaxNetworkEntities);
+		SessionMaxRecordsPerPeerSelection = static_cast<uint32>(FMath::Clamp(
+			Settings->MaxRecordsPerPeerSelection, 1, MaxChannelUpdateRecords));
+		SessionMaxPayloadBytesPerPeerSelection = static_cast<uint32>(
+			FMath::Clamp(Settings->MaxPayloadKiBPerPeerSelection, 1, 4096)) * 1024u;
+		if (SessionMaxNetworkEntities != Settings->MaxNetworkEntities
+			|| SessionMaxPeerOwnedEntities != Settings->MaxPeerOwnedEntities
+			|| SessionMaxRecordsPerPeerSelection != static_cast<uint32>(Settings->MaxRecordsPerPeerSelection)
+			|| SessionMaxPayloadBytesPerPeerSelection / 1024u != static_cast<uint32>(Settings->MaxPayloadKiBPerPeerSelection))
+		{
+			UE_LOG(LogTemp, Warning, TEXT("Invalid Flecs networking limits were clamped for this session."));
+		}
+	}
 	WorkerBridgeState = MakeShared<FFlecsGenericWorkerBridgeState, ESPMode::ThreadSafe>();
 	SessionProtocolVersion = DefaultSessionProtocolVersion;
 	TryConfigureSession();
@@ -1211,8 +1226,8 @@ void UFlecsNetworkSessionSubsystem::ProcessServerReplication()
 			static_cast<float>(FocalLocation.Z));
 		Interest.Tiers = GetConfiguredDistanceTiers();
 		FFlecsRelevanceBudget Budget;
-		Budget.MaxRecords = 128;
-		Budget.MaxBytes = 64 * 1024;
+		Budget.MaxRecords = SessionMaxRecordsPerPeerSelection;
+		Budget.MaxBytes = SessionMaxPayloadBytesPerPeerSelection;
 		if (PeerInterestProvider)
 		{
 			FFlecsPeerSpawnContext Context;
@@ -1534,10 +1549,11 @@ bool UFlecsNetworkSessionSubsystem::QueuePeerEntitySpawn(
 	const uint64 LocalEpoch = Session->LocalAttachmentEpoch;
 	const uint64 ServerEpoch = Session->ServerWorldEpoch;
 	const uint64 Connection = Incarnation.Value;
+	const int32 PeerEntityLimit = SessionMaxPeerOwnedEntities;
 	const TSharedRef<FFlecsGenericWorkerBridgeState, ESPMode::ThreadSafe> BridgeRef = WorkerBridgeState.ToSharedRef();
 	const EFlecsWorkerCommandResult QueueResult =
 		FlecsSubsystem->SubmitWorkerCommand(LocalEpoch, [BridgeRef, Request = MoveTemp(Request), LocalEpoch,
-															ServerEpoch, Connection, RequestId](flecs::world&) mutable {
+															ServerEpoch, Connection, RequestId, PeerEntityLimit](flecs::world&) mutable {
 			FFlecsGenericWorkerBridgeState::FSpawnResult Result;
 			Result.LocalAttachmentEpoch = LocalEpoch;
 			Result.ServerWorldEpoch = ServerEpoch;
@@ -1553,7 +1569,7 @@ bool UFlecsNetworkSessionSubsystem::QueuePeerEntitySpawn(
 			{
 				TArray<FlecsSimulation::FNetworkEntityIdentity>* Owned =
 					BridgeRef->OwnedEntitiesByConnection.Find(Connection);
-				if (Owned && Owned->Num() >= MaxPeerOwnedEntities)
+				if (Owned && Owned->Num() >= PeerEntityLimit)
 				{
 					Result.Result = FlecsSimulation::EModelResult::LimitReached;
 				}
@@ -1673,11 +1689,12 @@ bool UFlecsNetworkSessionSubsystem::InstallWorkerIntegration(FString& OutError)
 	const TMap<FString, FFlecsTrustedPermissionRule> PermissionRules = TrustedPermissionRules;
 	const TMap<FString, FFlecsTrustedSpatialDefinition> SpatialDefinitions = TrustedSpatialDefinitions;
 	const bool bAuthoritative = GetWorld() && FlecsHasAuthoritativeSimulation(GetWorld()->GetNetMode());
+	const int32 AuthoritativeEntityLimit = SessionMaxNetworkEntities;
 	const uint64 CapturedServerWorldEpoch = bAuthoritative ? ServerWorldEpoch : 0;
 	const uint64 ExpectedLocalEpoch = FlecsSubsystem->GetActiveEpoch();
 
 	FFlecsWorkerStartupCallback Startup = [BridgeRef, RegistryRef, PermissionRules, SpatialDefinitions, bAuthoritative,
-											  CapturedServerWorldEpoch](flecs::world& World, uint64 LocalEpoch) {
+											  CapturedServerWorldEpoch, AuthoritativeEntityLimit](flecs::world& World, uint64 LocalEpoch) {
 		check(!IsInGameThread());
 		if (BridgeRef->bLifecycleRetired.load(std::memory_order_acquire))
 		{
@@ -1696,7 +1713,8 @@ bool UFlecsNetworkSessionSubsystem::InstallWorkerIntegration(FString& OutError)
 		BridgeRef->ClientModelIncarnation = 0;
 		BridgeRef->bSpatialDiagnosticsReported = false;
 		BridgeRef->bAuthoritativeModelFailed.store(false, std::memory_order_release);
-		BridgeRef->Model = MakeUnique<FlecsSimulation::FWorkerEntityModel>(*RegistryRef, bAuthoritative);
+		BridgeRef->Model = MakeUnique<FlecsSimulation::FWorkerEntityModel>(
+			*RegistryRef, bAuthoritative, bAuthoritative ? AuthoritativeEntityLimit : FlecsSimulation::MaxEntities);
 		if (!bAuthoritative || CapturedServerWorldEpoch == 0)
 		{
 			return;
