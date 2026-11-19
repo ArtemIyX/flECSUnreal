@@ -80,6 +80,7 @@ enum class EFlecsPeerSessionState : uint8
 	AwaitingManifest,
 	Compatible,
 	Rejected,
+	PeerSpawnFinished,
 	Closing
 };
 
@@ -119,6 +120,9 @@ struct FFlecsSessionEvent
 	uint32 CommandSequence = 0;
 	uint8 CommandResult = 0;
 	FString Reason;
+	uint64 SpawnRequestId = 0;
+	FlecsSimulation::EModelResult SpawnResult = FlecsSimulation::EModelResult::Invalid;
+	FlecsSimulation::FNetworkEntityIdentity SpawnedIdentity;
 	/** Optional bounded bytes inspected on the client worker after applying this batch. */
 	FlecsSimulation::FNetworkEntityIdentity InspectedIdentity;
 	TArray<uint8> InspectedComponentBytes;

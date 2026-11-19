@@ -59,6 +59,9 @@ public:
 	FFlecsSessionEventDelegate OnSessionEvent;
 	/** Request same-world server channel replacement on a later tick. */
 	bool RequestChannelRecreation(FConnectionIncarnation Incarnation);
+	/** Queue one peer-owned spawn; PeerSpawnFinished reports worker execution, not queue admission. */
+	bool QueuePeerEntitySpawn(FConnectionIncarnation Incarnation, FFlecsPeerSpawnRequest Request,
+		uint64& OutRequestId, FString& OutError);
 #if WITH_DEV_AUTOMATION_TESTS
 	/** Opt in to inspecting one registered component on the client worker after batch apply. */
 	bool SetClientInspectionComponent(const FString& StableComponentId);
@@ -132,6 +135,7 @@ private:
 	uint64 LocalAttachmentEpoch = 0;
 	uint64 ServerWorldEpoch = 0;
 	uint32 SessionProtocolVersion = 0;
+	uint64 NextSpawnRequestId = 0;
 	FlecsModRegistry::FRegistry ModRegistry;
 	TMap<FString, FFlecsTrustedPermissionRule> TrustedPermissionRules;
 	TMap<FString, FFlecsTrustedSpatialDefinition> TrustedSpatialDefinitions;

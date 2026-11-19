@@ -29,6 +29,7 @@ namespace
 	constexpr uint32 MaxPublishedLiveIdentities = 5000;
 	constexpr int32 MaxRetirementBarriersQueuedPerTick = 16;
 	constexpr int32 MaxPendingRetiredIncarnations = 1024;
+	constexpr int32 MaxPeerOwnedEntities = 256;
 	constexpr int32 SpatialMetadataPayloadFixedBytes = 55;
 	uint64 NextServerWorldEpoch = 0;
 	uint64 NextConnectionIncarnation = 0;
@@ -270,6 +271,9 @@ struct FFlecsGenericPeerSchedulingRuntime
 	bool bModelAckQueued = false;
 	bool bTransferSucceeded = false;
 	bool bPeerSpawnQueued = false;
+	bool bSpawnPending = false;
+	bool bPendingInitialSpawn = false;
+	uint64 PendingSpawnRequestId = 0;
 };
 
 struct FFlecsGenericWorkerBridgeState
@@ -301,6 +305,8 @@ struct FFlecsGenericWorkerBridgeState
 	{
 		uint64 LocalAttachmentEpoch = 0;
 		uint64 ServerWorldEpoch = 0;
+		uint64 RequestId = 0;
+		FlecsSimulation::FNetworkEntityIdentity Identity;
 		FlecsSimulation::EModelResult Result = FlecsSimulation::EModelResult::Invalid;
 	};
 	struct FDeltaAckResult
@@ -333,7 +339,7 @@ struct FFlecsGenericWorkerBridgeState
 	TSet<uint64> RetirementBarrierPassed; // guarded by ResultMutex
 	TSet<uint64> CommandResultOverflowIncarnations; // guarded by ResultMutex
 	TUniquePtr<FlecsSimulation::FWorkerEntityModel> Model; // worker thread only
-	TMap<uint64, FlecsSimulation::FNetworkEntityIdentity> OwnedEntitiesByConnection; // worker thread only
+	TMap<uint64, TArray<FlecsSimulation::FNetworkEntityIdentity>> OwnedEntitiesByConnection; // worker thread only
 	uint64 LastClientSnapshotRevision = 0; // worker thread only
 	uint64 ClientModelIncarnation = 0; // worker thread only
 	uint64 LocalAttachmentEpoch = 0; // worker thread only
@@ -792,14 +798,35 @@ void UFlecsNetworkSessionSubsystem::ProcessServerReplication()
 				bHasSpawnResult = true;
 			}
 		}
-		if (bHasSpawnResult && (SpawnResult.LocalAttachmentEpoch != LocalAttachmentEpoch ||
-			SpawnResult.ServerWorldEpoch != Session.ServerWorldEpoch ||
-			SpawnResult.Result != FlecsSimulation::EModelResult::Accepted))
+		if (bHasSpawnResult)
 		{
-			RejectPeerManifest(Session.Incarnation, TEXT("The worker rejected the peer's initial entity spawn."));
-			continue;
+			if (!Runtime.bSpawnPending || SpawnResult.RequestId != Runtime.PendingSpawnRequestId ||
+				SpawnResult.LocalAttachmentEpoch != LocalAttachmentEpoch || SpawnResult.ServerWorldEpoch != Session.ServerWorldEpoch)
+			{
+				RejectPeerManifest(Session.Incarnation, TEXT("The worker returned a stale peer spawn result."));
+				continue;
+			}
+			const bool bWasInitial = Runtime.bPendingInitialSpawn;
+			Runtime.bSpawnPending = false;
+			Runtime.bPendingInitialSpawn = false;
+			Runtime.PendingSpawnRequestId = 0;
+			FFlecsSessionEvent Event;
+			Event.Kind = EFlecsSessionEventKind::PeerSpawnFinished;
+			Event.Incarnation = Session.Incarnation;
+			Event.Controller = Session.Controller;
+			Event.Channel = Session.Channel;
+			Event.ServerWorldEpoch = Session.ServerWorldEpoch;
+			Event.SpawnRequestId = SpawnResult.RequestId;
+			Event.SpawnResult = SpawnResult.Result;
+			Event.SpawnedIdentity = SpawnResult.Identity;
+			OnSessionEvent.Broadcast(Event);
+			if (bWasInitial && SpawnResult.Result != FlecsSimulation::EModelResult::Accepted)
+			{
+				RejectPeerManifest(Session.Incarnation, TEXT("The worker rejected the peer's initial entity spawn."));
+				continue;
+			}
 		}
-		if (!Runtime.bPeerSpawnQueued && PeerSpawnFactory)
+		if (!Runtime.bPeerSpawnQueued && !Runtime.bSpawnPending && PeerSpawnFactory)
 		{
 			APlayerController* SpawnController = Pair.Key.Get();
 			if (!IsValid(SpawnController))
@@ -820,49 +847,14 @@ void UFlecsNetworkSessionSubsystem::ProcessServerReplication()
 					TEXT("The peer spawn factory returned an invalid request.") : SpawnError.Left(512));
 				continue;
 			}
-			TArray<FlecsSimulation::FInitialComponent> InitialComponents = MoveTemp(SpawnRequest.InitialComponents);
-			const FString DefinitionStableId = MoveTemp(SpawnRequest.DefinitionStableId);
-			const uint64 LocalEpoch = LocalAttachmentEpoch;
-			const uint64 ServerEpoch = Session.ServerWorldEpoch;
-			const uint64 Incarnation = Session.Incarnation.Value;
-			const uint64 OwnerToken = Session.Incarnation.Value;
-			const TSharedRef<FFlecsGenericWorkerBridgeState, ESPMode::ThreadSafe> BridgeRef = WorkerBridgeState.ToSharedRef();
-			const EFlecsWorkerCommandResult SpawnQueueResult = FlecsSubsystem->SubmitWorkerCommand(LocalEpoch,
-				[BridgeRef, DefinitionStableId, InitialComponents = MoveTemp(InitialComponents),
-					LocalEpoch, ServerEpoch, Incarnation, OwnerToken](flecs::world&) mutable
-				{
-					FFlecsGenericWorkerBridgeState::FSpawnResult Result;
-					Result.LocalAttachmentEpoch = LocalEpoch;
-					Result.ServerWorldEpoch = ServerEpoch;
-					bool bRetired = false;
-					{
-						FScopeLock Lock(&BridgeRef->ResultMutex);
-					bRetired = BridgeRef->bRetirementFailClosed || BridgeRef->RetiredConnectionIncarnations.Contains(Incarnation);
-					}
-					if (!bRetired && BridgeRef->LocalAttachmentEpoch == LocalEpoch && BridgeRef->ServerWorldEpoch == ServerEpoch &&
-						BridgeRef->Model && BridgeRef->bModelInitialized)
-					{
-						FlecsSimulation::FNetworkEntityIdentity Identity;
-						Result.Result = BridgeRef->Model->SpawnAuthoritative(DefinitionStableId, OwnerToken,
-							TConstArrayView<FlecsSimulation::FInitialComponent>(InitialComponents), Identity);
-						if (Result.Result == FlecsSimulation::EModelResult::Accepted)
-						{
-							BridgeRef->OwnedEntitiesByConnection.Add(Incarnation, MoveTemp(Identity));
-						}
-					}
-					FScopeLock Lock(&BridgeRef->ResultMutex);
-					if (!BridgeRef->bRetirementFailClosed && !BridgeRef->RetiredConnectionIncarnations.Contains(Incarnation))
-					{
-						BridgeRef->SpawnResults.Add(Incarnation, Result);
-					}
-				});
-			if (SpawnQueueResult != EFlecsWorkerCommandResult::Accepted)
+			uint64 RequestId = 0;
+			if (!QueuePeerEntitySpawn(Session.Incarnation, MoveTemp(SpawnRequest), RequestId, SpawnError))
 			{
-				RejectPeerManifest(Session.Incarnation,
-					FString::Printf(TEXT("Could not queue peer entity creation (result %u)."),
-						static_cast<uint32>(SpawnQueueResult)));
+				RejectPeerManifest(Session.Incarnation, SpawnError.IsEmpty() ?
+					TEXT("Could not queue the peer's initial entity spawn.") : SpawnError.Left(512));
 				continue;
 			}
+			Runtime.bPendingInitialSpawn = true;
 			Runtime.bPeerSpawnQueued = true;
 		}
 		if (Runtime.bModelAckPending)
@@ -1249,6 +1241,97 @@ bool UFlecsNetworkSessionSubsystem::SetPeerInterestProvider(
 	return true;
 }
 
+bool UFlecsNetworkSessionSubsystem::QueuePeerEntitySpawn(FConnectionIncarnation Incarnation,
+	FFlecsPeerSpawnRequest Request, uint64& OutRequestId, FString& OutError)
+{
+	check(IsInGameThread());
+	OutRequestId = 0;
+	UWorld* World = GetWorld();
+	UFlecsGameInstanceSubsystem* FlecsSubsystem = FlecsGameInstanceSubsystem.Get();
+	FPeerSession* Session = FindSession(Incarnation);
+	if (bIsClosing || bRetirementFailClosed || !World || World->GetNetMode() == NM_Client ||
+		!FlecsSubsystem || !WorkerBridgeState.IsValid() || !Session || !Session->Runtime.IsValid() ||
+		Session->State != EFlecsPeerSessionState::Compatible || Session->LocalAttachmentEpoch != LocalAttachmentEpoch ||
+		Session->ServerWorldEpoch == 0 || Session->ServerWorldEpoch != ServerWorldEpoch ||
+		WorkerBridgeState->bAuthoritativeModelFailed.load(std::memory_order_acquire))
+	{
+		OutError = TEXT("The peer or authoritative worker is unavailable.");
+		return false;
+	}
+	FFlecsGenericPeerSchedulingRuntime& Runtime = *Session->Runtime;
+	if (Runtime.bSpawnPending || NextSpawnRequestId == MAX_uint64)
+	{
+		OutError = TEXT("The peer already has a pending spawn or request IDs are exhausted.");
+		return false;
+	}
+	if (!ModRegistry.FindEntityDefinition(Request.DefinitionStableId) ||
+		Request.InitialComponents.Num() > FlecsSimulation::MaxComponentsPerEntity)
+	{
+		OutError = TEXT("The spawn definition or component count is invalid.");
+		return false;
+	}
+	uint64 TotalBytes = 0;
+	for (const FlecsSimulation::FInitialComponent& Component : Request.InitialComponents)
+	{
+		TotalBytes += static_cast<uint32>(Component.Payload.Num());
+		if (Component.Payload.Num() > static_cast<int32>(MaxTransportSchemaPayloadBytes) ||
+			TotalBytes > FlecsSimulation::MaxBatchBytes)
+		{
+			OutError = TEXT("The spawn request exceeds the bounded component payload limits.");
+			return false;
+		}
+	}
+	const uint64 RequestId = NextSpawnRequestId + 1;
+	const uint64 LocalEpoch = Session->LocalAttachmentEpoch;
+	const uint64 ServerEpoch = Session->ServerWorldEpoch;
+	const uint64 Connection = Incarnation.Value;
+	const TSharedRef<FFlecsGenericWorkerBridgeState, ESPMode::ThreadSafe> BridgeRef = WorkerBridgeState.ToSharedRef();
+	const EFlecsWorkerCommandResult QueueResult = FlecsSubsystem->SubmitWorkerCommand(LocalEpoch,
+		[BridgeRef, Request = MoveTemp(Request), LocalEpoch, ServerEpoch, Connection, RequestId](flecs::world&) mutable
+		{
+			FFlecsGenericWorkerBridgeState::FSpawnResult Result;
+			Result.LocalAttachmentEpoch = LocalEpoch;
+			Result.ServerWorldEpoch = ServerEpoch;
+			Result.RequestId = RequestId;
+			bool bRetired = false;
+			{
+				FScopeLock Lock(&BridgeRef->ResultMutex);
+				bRetired = BridgeRef->bRetirementFailClosed || BridgeRef->RetiredConnectionIncarnations.Contains(Connection);
+			}
+			if (!bRetired && BridgeRef->LocalAttachmentEpoch == LocalEpoch && BridgeRef->ServerWorldEpoch == ServerEpoch &&
+				BridgeRef->Model && BridgeRef->bModelInitialized)
+			{
+				TArray<FlecsSimulation::FNetworkEntityIdentity>* Owned = BridgeRef->OwnedEntitiesByConnection.Find(Connection);
+				if (Owned && Owned->Num() >= MaxPeerOwnedEntities)
+				{
+					Result.Result = FlecsSimulation::EModelResult::LimitReached;
+				}
+				else
+				{
+					Result.Result = BridgeRef->Model->SpawnAuthoritative(Request.DefinitionStableId, Connection,
+						TConstArrayView<FlecsSimulation::FInitialComponent>(Request.InitialComponents), Result.Identity);
+					if (Result.Result == FlecsSimulation::EModelResult::Accepted)
+						BridgeRef->OwnedEntitiesByConnection.FindOrAdd(Connection).Add(Result.Identity);
+				}
+			}
+			FScopeLock Lock(&BridgeRef->ResultMutex);
+			if (!BridgeRef->bRetirementFailClosed && !BridgeRef->RetiredConnectionIncarnations.Contains(Connection))
+				BridgeRef->SpawnResults.Add(Connection, MoveTemp(Result));
+		});
+	if (QueueResult != EFlecsWorkerCommandResult::Accepted)
+	{
+		OutError = FString::Printf(TEXT("The worker could not queue the peer spawn (result %u)."), static_cast<uint32>(QueueResult));
+		return false;
+	}
+	NextSpawnRequestId = RequestId;
+	Runtime.bSpawnPending = true;
+	Runtime.bPendingInitialSpawn = false;
+	Runtime.PendingSpawnRequestId = RequestId;
+	OutRequestId = RequestId;
+	OutError.Reset();
+	return true;
+}
+
 bool UFlecsNetworkSessionSubsystem::RegisterTrustedPermissionRule(
 	const FString& PermissionStableId, FFlecsTrustedPermissionRule Rule, FString& OutError)
 {
@@ -1501,10 +1584,21 @@ bool UFlecsNetworkSessionSubsystem::InstallWorkerIntegration(FString& OutError)
 			{
 				continue;
 			}
-			FlecsSimulation::FNetworkEntityIdentity* Identity =
+			TArray<FlecsSimulation::FNetworkEntityIdentity>* Owned =
 				BridgeRef->OwnedEntitiesByConnection.Find(RetiredIncarnation);
-			if (Identity && BridgeRef->Model->DespawnAuthoritative(*Identity, BridgeRef->SimulationTick) !=
-				FlecsSimulation::EModelResult::Accepted)
+			bool bAllRetired = true;
+			if (Owned)
+			{
+				for (int32 Index = Owned->Num() - 1; Index >= 0; --Index)
+				{
+					const FlecsSimulation::EModelResult Result = BridgeRef->Model->DespawnAuthoritative((*Owned)[Index], BridgeRef->SimulationTick);
+					if (Result == FlecsSimulation::EModelResult::Accepted || Result == FlecsSimulation::EModelResult::StaleIdentity)
+						Owned->RemoveAtSwap(Index, 1, EAllowShrinking::No);
+					else
+						bAllRetired = false;
+				}
+			}
+			if (!bAllRetired)
 			{
 				continue;
 			}
