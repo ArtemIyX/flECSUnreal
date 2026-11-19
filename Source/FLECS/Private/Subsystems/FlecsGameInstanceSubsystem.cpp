@@ -1,236 +1,304 @@
 #include "Subsystems/FlecsGameInstanceSubsystem.h"
-#include "EcsEntityNames.h"
+#include "FlecsSimulationRunner.h"
+#include "Settings/FlecsDeveloperSettings.h"
+
 #include "Engine/World.h"
 
 #include <atomic>
 
 namespace
 {
-	std::atomic<uint64> NextWorldSerial{ 0 };
+std::atomic<uint64> NextWorldSerial{0};
+std::atomic<uint64> NextWorldEpoch{0};
 }
 
 void UFlecsGameInstanceSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
 	bIsShuttingDown = false;
-	EcsWorld = MakeUnique<flecs::world>();
 	WorldSerial = ++NextWorldSerial;
 }
 
 void UFlecsGameInstanceSubsystem::Deinitialize()
 {
 	bIsShuttingDown = true;
-	bIsProgressing = false;
+	if (UWorld* World = ActiveWorld.Get())
+	{
+		OnWorldAboutToDetach.Broadcast(*World);
+	}
 	ActiveWorld.Reset();
-	DestroyActiveWorldScope();
-
-	for (TPair<FName, flecs::entity>& pair : PersistentSystems)
-	{
-		if (EcsWorld.IsValid() && EcsWorld->is_alive(pair.Value.id()))
-		{
-			pair.Value.destruct();
-		}
-	}
-	PersistentSystems.Empty();
-	EcsWorld.Reset();
+	StopRunner();
 	WorldSerial = 0;
-
 	Super::Deinitialize();
-}
-
-flecs::world* UFlecsGameInstanceSubsystem::GetEcsWorld()
-{
-	return EcsWorld.Get();
-}
-
-const flecs::world* UFlecsGameInstanceSubsystem::GetEcsWorld() const
-{
-	return EcsWorld.Get();
-}
-
-flecs::entity UFlecsGameInstanceSubsystem::GetActiveWorldScope() const
-{
-	return ActiveWorldScope;
-}
-
-FFlecsEntityHandle UFlecsGameInstanceSubsystem::MakeEntityHandle(ecs_entity_t InEntity) const
-{
-	if (!EcsWorld.IsValid() || !EcsWorld->is_alive(InEntity))
-	{
-		return FFlecsEntityHandle();
-	}
-
-	return FFlecsEntityHandle(static_cast<uint64>(InEntity), WorldSerial);
-}
-
-bool UFlecsGameInstanceSubsystem::ResolveEntityHandle(
-	const FFlecsEntityHandle& InHandle, ecs_entity_t& OutEntity) const
-{
-	if (!EcsWorld.IsValid() || !InHandle.IsValid() || WorldSerial == 0)
-	{
-		return false;
-	}
-
-	const uint64 EntityValue = InHandle.EntityId;
-	if (InHandle.WorldSerial != WorldSerial || EntityValue == 0)
-	{
-		return false;
-	}
-
-	const ecs_entity_t Entity = static_cast<ecs_entity_t>(EntityValue);
-	if (!EcsWorld->is_valid(Entity) || !EcsWorld->is_alive(Entity))
-	{
-		return false;
-	}
-
-	OutEntity = Entity;
-	return true;
-}
-
-bool UFlecsGameInstanceSubsystem::IsEntityInScope(ecs_entity_t InEntity, flecs::entity InScope) const
-{
-	if (!EcsWorld.IsValid() || InScope.world().c_ptr() != EcsWorld->c_ptr() ||
-		!InScope.is_valid() || !EcsWorld->is_valid(InEntity) || !EcsWorld->is_alive(InEntity))
-	{
-		return false;
-	}
-
-	flecs::entity Current(EcsWorld->c_ptr(), InEntity);
-	while (Current.is_valid())
-	{
-		if (Current.id() == InScope.id())
-		{
-			return true;
-		}
-
-		const flecs::entity Parent = Current.parent();
-		if (!Parent.is_valid() || Parent.id() == Current.id())
-		{
-			break;
-		}
-		Current = Parent;
-	}
-
-	return false;
 }
 
 bool UFlecsGameInstanceSubsystem::AttachWorld(UWorld& InWorld)
 {
-	if (bIsShuttingDown || !EcsWorld.IsValid())
+	check(IsInGameThread());
+	if (bIsShuttingDown)
 	{
 		return false;
 	}
-
-	if (ActiveWorld.Get() == &InWorld && ActiveWorldScope.is_valid())
+	if (ActiveWorld.Get() == &InWorld && Runner.IsValid())
 	{
 		return true;
 	}
-
 	if (UWorld* PreviousWorld = ActiveWorld.Get())
 	{
 		OnWorldAboutToDetach.Broadcast(*PreviousWorld);
 	}
-
-	DestroyActiveWorldScope();
+	ActiveWorld.Reset();
+	StopRunner();
 	ActiveWorld = &InWorld;
-	LastProgressFrame = MAX_uint64;
-
-	const FString scopeName = FString::Printf(
-		TEXT("%s_%llu"), UTF8_TO_TCHAR(FLECS::EntityNames::UnrealWorldScopePrefix), ++WorldGeneration);
-	FTCHARToUTF8 convertedName(*scopeName);
-	ActiveWorldScope = EcsWorld->entity(convertedName.Get());
-	if (ActiveWorldScope.is_valid())
+	++WorldGeneration;
+	const UFlecsDeveloperSettings* Settings = GetDefault<UFlecsDeveloperSettings>();
+	Runner = MakeShared<FFlecsSimulationRunner, ESPMode::ThreadSafe>(
+		++NextWorldEpoch, Settings ? Settings->SimulationRateHz : 60.0f);
+	TArray<FFlecsWorkerCommand> StartupCommands;
+	StartupCommands.Reserve(PersistentWorkerCommands.Num());
+	for (const TPair<FName, FFlecsWorkerCommand>& Entry : PersistentWorkerCommands)
 	{
-		OnWorldAttached.Broadcast(InWorld);
+		StartupCommands.Add(Entry.Value);
 	}
-	return ActiveWorldScope.is_valid();
+	TArray<FFlecsNamedWorkerDataPublisher> StartupPublishers;
+	StartupPublishers.Reserve(PersistentDataPublishers.Num());
+	for (const TPair<FName, FFlecsWorkerDataPublisher>& Entry : PersistentDataPublishers)
+	{
+		StartupPublishers.Add({Entry.Key, Entry.Value});
+	}
+	TArray<FFlecsNamedWorkerLifecycle> StartupLifecycles;
+	StartupLifecycles.Reserve(PersistentWorkerLifecycles.Num());
+	for (const TPair<FName, FFlecsNamedWorkerLifecycle>& Entry : PersistentWorkerLifecycles)
+	{
+		StartupLifecycles.Add(Entry.Value);
+	}
+	if (!Runner->Start(MoveTemp(StartupCommands), MoveTemp(StartupPublishers), MoveTemp(StartupLifecycles)))
+	{
+		UE_LOG(LogTemp, Error, TEXT("FLECS simulation worker failed to initialize; the world will not advance."));
+		Runner.Reset();
+		ActiveWorld.Reset();
+		return false;
+	}
+	OnWorldAttached.Broadcast(InWorld);
+	return true;
 }
 
 void UFlecsGameInstanceSubsystem::DetachWorld(UWorld& InWorld)
 {
+	check(IsInGameThread());
 	if (ActiveWorld.Get() != &InWorld)
 	{
 		return;
 	}
-
 	OnWorldAboutToDetach.Broadcast(InWorld);
 	ActiveWorld.Reset();
-	LastProgressFrame = MAX_uint64;
-	DestroyActiveWorldScope();
+	StopRunner();
 }
 
 bool UFlecsGameInstanceSubsystem::IsWorldReady(const UWorld& InWorld) const
 {
-	return !bIsShuttingDown && !bIsProgressing && EcsWorld.IsValid() &&
-		ActiveWorld.Get() == &InWorld &&
-		ActiveWorldScope.is_valid() && ActiveWorldScope.world().c_ptr() == EcsWorld->c_ptr();
+	check(IsInGameThread());
+	return !bIsShuttingDown && ActiveWorld.Get() == &InWorld && Runner.IsValid();
 }
 
-bool UFlecsGameInstanceSubsystem::ProgressFromWorld(UWorld& InWorld, float DeltaTime)
+uint64 UFlecsGameInstanceSubsystem::GetActiveEpoch() const
 {
-	if (bIsShuttingDown || bIsProgressing || DeltaTime <= 0.0f || ActiveWorld.Get() != &InWorld || !EcsWorld.IsValid())
+	check(IsInGameThread());
+	UWorld* World = ActiveWorld.Get();
+	return World && IsWorldReady(*World) ? Runner->GetEpoch() : 0;
+}
+
+EFlecsWorkerCommandResult UFlecsGameInstanceSubsystem::SubmitWorkerCommand(
+	uint64 ExpectedEpoch, FFlecsWorkerCommand&& Command)
+{
+	check(IsInGameThread());
+	if (!Runner.IsValid() || !ActiveWorld.IsValid())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Rejected Flecs worker command because no world session is active."));
+		return EFlecsWorkerCommandResult::Stopping;
+	}
+	const EFlecsWorkerCommandResult Result = Runner->Submit(ExpectedEpoch, MoveTemp(Command));
+	if (Result != EFlecsWorkerCommandResult::Accepted)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("Rejected Flecs worker command: result %u, expected epoch %llu, active epoch %llu."),
+			static_cast<uint32>(Result), ExpectedEpoch, Runner->GetEpoch());
+	}
+	return Result;
+}
+
+bool UFlecsGameInstanceSubsystem::RegisterPersistentWorkerCommand(FName Name, FFlecsWorkerCommand&& Command)
+{
+	check(IsInGameThread());
+	if (Name.IsNone() || !Command)
 	{
 		return false;
 	}
-
-	if (LastProgressFrame == GFrameCounter)
+	PersistentWorkerCommands.Add(Name, Command);
+	if (!Runner.IsValid())
 	{
-		return false;
+		return true;
 	}
+	const EFlecsWorkerCommandResult Result = Runner->Submit(Runner->GetEpoch(), MoveTemp(Command));
+	if (Result != EFlecsWorkerCommandResult::Accepted)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("Persistent Flecs worker command '%s' was retained for the next session but not queued: result %u."),
+			*Name.ToString(), static_cast<uint32>(Result));
+	}
+	return Result == EFlecsWorkerCommandResult::Accepted;
+}
 
-	LastProgressFrame = GFrameCounter;
-	bIsProgressing = true;
-	EcsWorld->progress(static_cast<ecs_ftime_t>(DeltaTime));
-	bIsProgressing = false;
-	return true;
+EFlecsWorkerCommandResult UFlecsGameInstanceSubsystem::RegisterPersistentDataPublisher(
+	uint64 ExpectedEpoch, FName Name, FFlecsWorkerDataPublisher&& Publisher)
+{
+	check(IsInGameThread());
+	if (Name.IsNone() || !Publisher)
+	{
+		return EFlecsWorkerCommandResult::InvalidCommand;
+	}
+	if (Runner.IsValid() && ExpectedEpoch != Runner->GetEpoch())
+		return EFlecsWorkerCommandResult::StaleEpoch;
+	if (!Runner.IsValid() && (ExpectedEpoch != 0 || ActiveWorld.IsValid()))
+		return EFlecsWorkerCommandResult::StaleEpoch;
+	if (!PersistentDataPublishers.Contains(Name)
+		&& PersistentDataPublishers.Num() >= static_cast<int32>(FlecsMaxDataPublishers))
+	{
+		return EFlecsWorkerCommandResult::RegistryFull;
+	}
+	if (!Runner.IsValid())
+	{
+		if (ExpectedEpoch != 0 || ActiveWorld.IsValid())
+			return EFlecsWorkerCommandResult::StaleEpoch;
+		PersistentDataPublishers.Add(Name, MoveTemp(Publisher));
+		return EFlecsWorkerCommandResult::Accepted;
+	}
+	if (!ActiveWorld.IsValid())
+		return EFlecsWorkerCommandResult::Stopping;
+	FFlecsWorkerDataPublisher PersistentCopy = Publisher;
+	const EFlecsWorkerCommandResult Result = Runner->RegisterPublisher(ExpectedEpoch, Name, MoveTemp(Publisher));
+	if (Result != EFlecsWorkerCommandResult::Accepted)
+		return Result;
+	PersistentDataPublishers.Add(Name, MoveTemp(PersistentCopy));
+	return EFlecsWorkerCommandResult::Accepted;
+}
+
+EFlecsWorkerCommandResult UFlecsGameInstanceSubsystem::UnregisterPersistentDataPublisher(
+	uint64 ExpectedEpoch, FName Name)
+{
+	check(IsInGameThread());
+	if (Name.IsNone())
+		return EFlecsWorkerCommandResult::InvalidCommand;
+	if (!Runner.IsValid())
+	{
+		if (ExpectedEpoch != 0 || ActiveWorld.IsValid())
+			return EFlecsWorkerCommandResult::StaleEpoch;
+		PersistentDataPublishers.Remove(Name);
+		return EFlecsWorkerCommandResult::Accepted;
+	}
+	if (!ActiveWorld.IsValid())
+		return EFlecsWorkerCommandResult::Stopping;
+	const EFlecsWorkerCommandResult Result = Runner->UnregisterPublisher(ExpectedEpoch, Name);
+	if (Result == EFlecsWorkerCommandResult::Accepted)
+		PersistentDataPublishers.Remove(Name);
+	return Result;
+}
+
+EFlecsWorkerCommandResult UFlecsGameInstanceSubsystem::RegisterPersistentWorkerLifecycle(
+	uint64 ExpectedEpoch, FName Name, FFlecsWorkerStartupCallback Startup, FFlecsWorkerShutdownCallback Shutdown)
+{
+	check(IsInGameThread());
+	if (Name.IsNone() || !Startup || !Shutdown)
+		return EFlecsWorkerCommandResult::InvalidCommand;
+	if (Runner.IsValid() && ExpectedEpoch != Runner->GetEpoch())
+		return EFlecsWorkerCommandResult::StaleEpoch;
+	if (!Runner.IsValid() && (ExpectedEpoch != 0 || ActiveWorld.IsValid()))
+		return EFlecsWorkerCommandResult::StaleEpoch;
+	if (!PersistentWorkerLifecycles.Contains(Name)
+		&& PersistentWorkerLifecycles.Num() >= static_cast<int32>(FFlecsSimulationRunner::MaxPublicationExtractors))
+	{
+		return EFlecsWorkerCommandResult::RegistryFull;
+	}
+	if (!Runner.IsValid())
+	{
+		if (ExpectedEpoch != 0 || ActiveWorld.IsValid())
+			return EFlecsWorkerCommandResult::StaleEpoch;
+		FFlecsNamedWorkerLifecycle Lifecycle;
+		Lifecycle.Name = Name;
+		Lifecycle.Startup = MoveTemp(Startup);
+		Lifecycle.Shutdown = MoveTemp(Shutdown);
+		PersistentWorkerLifecycles.Add(Name, MoveTemp(Lifecycle));
+		return EFlecsWorkerCommandResult::Accepted;
+	}
+	if (!ActiveWorld.IsValid())
+		return EFlecsWorkerCommandResult::Stopping;
+	FFlecsWorkerStartupCallback PersistentStartup = Startup;
+	FFlecsWorkerShutdownCallback PersistentShutdown = Shutdown;
+	const EFlecsWorkerCommandResult Result =
+		Runner->RegisterLifecycle(ExpectedEpoch, Name, MoveTemp(Startup), MoveTemp(Shutdown));
+	if (Result != EFlecsWorkerCommandResult::Accepted)
+		return Result;
+	FFlecsNamedWorkerLifecycle Lifecycle;
+	Lifecycle.Name = Name;
+	Lifecycle.Startup = MoveTemp(PersistentStartup);
+	Lifecycle.Shutdown = MoveTemp(PersistentShutdown);
+	PersistentWorkerLifecycles.Add(Name, MoveTemp(Lifecycle));
+	return EFlecsWorkerCommandResult::Accepted;
+}
+
+EFlecsWorkerCommandResult UFlecsGameInstanceSubsystem::UnregisterPersistentWorkerLifecycle(
+	uint64 ExpectedEpoch, FName Name)
+{
+	check(IsInGameThread());
+	if (Name.IsNone())
+		return EFlecsWorkerCommandResult::InvalidCommand;
+	if (!Runner.IsValid())
+	{
+		if (ExpectedEpoch != 0 || ActiveWorld.IsValid())
+			return EFlecsWorkerCommandResult::StaleEpoch;
+		PersistentWorkerLifecycles.Remove(Name);
+		return EFlecsWorkerCommandResult::Accepted;
+	}
+	if (!ActiveWorld.IsValid())
+		return EFlecsWorkerCommandResult::Stopping;
+	const EFlecsWorkerCommandResult Result = Runner->UnregisterLifecycle(ExpectedEpoch, Name);
+	if (Result == EFlecsWorkerCommandResult::Accepted)
+		PersistentWorkerLifecycles.Remove(Name);
+	return Result;
+}
+
+TSharedPtr<const FFlecsSimulationPublication, ESPMode::ThreadSafe> UFlecsGameInstanceSubsystem::GetPublication() const
+{
+	check(IsInGameThread());
+	return Runner.IsValid() ? Runner->GetPublication() : nullptr;
+}
+
+TSharedPtr<const FFlecsSimulationDataPublication, ESPMode::ThreadSafe>
+UFlecsGameInstanceSubsystem::GetDataPublication() const
+{
+	check(IsInGameThread());
+	return Runner.IsValid() ? Runner->GetDataPublication() : nullptr;
+}
+
+void UFlecsGameInstanceSubsystem::SetSimulationPaused(bool bPaused)
+{
+	check(IsInGameThread());
+	if (Runner.IsValid())
+	{
+		Runner->SetPaused(bPaused);
+	}
+}
+
+void UFlecsGameInstanceSubsystem::StopRunner()
+{
+	if (Runner.IsValid())
+	{
+		Runner->StopAndJoin();
+		Runner.Reset();
+	}
 }
 
 FName UFlecsGameInstanceSubsystem::MakeWorldSystemName(FName InSystemName) const
 {
 	return FName(*FString::Printf(TEXT("World_%llu_%s"), WorldGeneration, *InSystemName.ToString()));
-}
-
-bool UFlecsGameInstanceSubsystem::UnregisterPersistentSystem(FName SystemName)
-{
-	flecs::entity* foundSystem = PersistentSystems.Find(SystemName);
-	if (!foundSystem)
-	{
-		return false;
-	}
-
-	if (EcsWorld.IsValid() && EcsWorld->is_alive(foundSystem->id()))
-	{
-		foundSystem->destruct();
-	}
-
-	PersistentSystems.Remove(SystemName);
-	return true;
-}
-
-bool UFlecsGameInstanceSubsystem::UnregisterPersistentSystem(flecs::entity SystemEntity)
-{
-	if (!EcsWorld.IsValid() || !SystemEntity.is_valid() || SystemEntity.world().c_ptr() != EcsWorld->c_ptr())
-	{
-		return false;
-	}
-
-	for (const TPair<FName, flecs::entity>& pair : PersistentSystems)
-	{
-		if (pair.Value == SystemEntity)
-		{
-			return UnregisterPersistentSystem(pair.Key);
-		}
-	}
-
-	return false;
-}
-
-void UFlecsGameInstanceSubsystem::DestroyActiveWorldScope()
-{
-	if (EcsWorld.IsValid() && ActiveWorldScope.is_valid() && EcsWorld->is_alive(ActiveWorldScope.id()))
-	{
-		ActiveWorldScope.destruct();
-	}
-
-	ActiveWorldScope = flecs::entity();
 }

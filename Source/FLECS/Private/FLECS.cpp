@@ -2,8 +2,11 @@
 
 #include "FLECS.h"
 #include "FLECS/Public/FLECS.h"
-#include "flecs.h"
 
+// Flecs is statically linked once into this module. Public consumers see the
+// Unreal FLECS_API import macro, so this curated list must export every Flecs
+// symbol used across the current plugin/project boundary. It is not a blanket
+// export of every bundled Flecs API for arbitrary third-party native use.
 #pragma comment(linker, "/export:ECS_PAIR")
 #pragma comment(linker, "/export:ECS_AUTO_OVERRIDE")
 #pragma comment(linker, "/export:ECS_TOGGLE")
@@ -16,12 +19,22 @@
 #pragma comment(linker, "/export:FLECS_IDEcsDefaultChildComponentID_")
 #pragma comment(linker, "/export:FLECS_IDEcsTickSourceID_")
 #pragma comment(linker, "/export:ecs_os_init")
+#pragma comment(linker, "/export:ecs_init")
+#pragma comment(linker, "/export:ecs_set_scope")
+#pragma comment(linker, "/export:flecs_component_ids_set")
+#pragma comment(linker, "/export:ecs_log_push_")
+#pragma comment(linker, "/export:ecs_log_pop_")
+#pragma comment(linker, "/export:ecs_opaque_init")
+#pragma comment(linker, "/export:ecs_cpp_get_constant_name")
+#pragma comment(linker, "/export:ecs_cpp_enum_init")
+#pragma comment(linker, "/export:ecs_cpp_enum_constant_register")
 #pragma comment(linker, "/export:flecs_poly_claim_")
 #pragma comment(linker, "/export:flecs_poly_release_")
 #pragma comment(linker, "/export:ecs_fini")
 #pragma comment(linker, "/export:ecs_stage_free")
 #pragma comment(linker, "/export:ecs_stage_get_id")
 #pragma comment(linker, "/export:ecs_entity_init")
+#pragma comment(linker, "/export:ecs_lookup_path_w_sep")
 #pragma comment(linker, "/export:ecs_get_target")
 #pragma comment(linker, "/export:ecs_get_world_info")
 #pragma comment(linker, "/export:ecs_delete")
@@ -41,6 +54,8 @@
 #pragma comment(linker, "/export:ecs_query_fini")
 #pragma comment(linker, "/export:ecs_query_iter")
 #pragma comment(linker, "/export:ecs_query_next")
+#pragma comment(linker, "/export:ecs_each_id")
+#pragma comment(linker, "/export:ecs_each_next")
 #pragma comment(linker, "/export:ecs_field_w_size")
 #pragma comment(linker, "/export:ecs_field_at_w_size")
 #pragma comment(linker, "/export:ecs_cpp_get_type_name")
@@ -189,5 +204,5 @@ void FFLECSModule::ShutdownModule()
 }
 
 #undef LOCTEXT_NAMESPACE
-	
+
 IMPLEMENT_MODULE(FFLECSModule, FLECS)

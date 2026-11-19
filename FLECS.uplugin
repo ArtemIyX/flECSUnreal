@@ -1,22 +1,43 @@
 ﻿{
 	"FileVersion": 3,
-	"Version": 1,
-	"VersionName": "1.0",
+	"Version": 2,
+	"VersionName": "1.1",
 	"FriendlyName": "FLECS",
 	"Description": "ECS framework (Pure C++)",
 	"Category": "Other",
 	"CreatedBy": "Wellsaik",
-	"CreatedByURL": "Wellsaik",
-	"DocsURL": "",
+	"CreatedByURL": "https://github.com/ArtemIyX",
+	"DocsURL": "https://github.com/ArtemIyX/flECSUnreal",
 	"MarketplaceURL": "",
 	"CanContainContent": true,
 	"IsBetaVersion": false,
 	"IsExperimentalVersion": false,
 	"Installed": false,
+	"Plugins": [
+		{
+			"Name": "Iris",
+			"Enabled": true
+		}
+	],
 	"Modules": [
 		{
 			"Name": "FLECS",
 			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "FLECSModding",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "FLECSNetwork",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "FLECSUncooked",
+			"Type": "UncookedOnly",
 			"LoadingPhase": "Default"
 		}
 	]

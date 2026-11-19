@@ -1,29 +1,27 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Data/Structs/FlecsDistanceUpdateRate.h"
 #include "Engine/DeveloperSettings.h"
 #include "FlecsDeveloperSettings.generated.h"
 
-UENUM(BlueprintType)
-enum class EFlecsTickPhase : uint8
-{
-	PrePhysics UMETA(DisplayName = "Pre Physics"),
-	DuringPhysics UMETA(DisplayName = "During Physics"),
-	PostPhysics UMETA(DisplayName = "Post Physics"),
-	PostUpdateWork UMETA(DisplayName = "Post Update Work")
-};
-
-UCLASS(Config=Game, DefaultConfig, meta=(DisplayName="FLECS"))
+UCLASS(Config = Game, DefaultConfig, meta = (DisplayName = "FLECS"))
 class FLECS_API UFlecsDeveloperSettings : public UDeveloperSettings
 {
 	GENERATED_BODY()
 
 public:
-	virtual FName GetCategoryName() const override
-	{
-		return FName(TEXT("Plugins"));
-	}
+	UFlecsDeveloperSettings();
 
-	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category="Plugin")
-	EFlecsTickPhase TickPhase = EFlecsTickPhase::PostPhysics;
+	virtual FName GetCategoryName() const override { return FName(TEXT("Plugins")); }
+
+	/** Fixed worker simulation steps per second. Takes effect when the world is attached. */
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Simulation",
+		meta = (ClampMin = "1.0", ClampMax = "240.0", Units = "Hz"))
+	float SimulationRateHz = 60.0f;
+
+	/** Increasing distance thresholds in centimeters and their maximum replication rates in Hz.
+	 * The final distance is the relevance range. At most four tiers are supported. */
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "Networking", meta = (TitleProperty = "MaxDistance"))
+	TArray<FFlecsDistanceUpdateRate> DistanceUpdateRates;
 };
