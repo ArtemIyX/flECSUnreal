@@ -14,6 +14,11 @@ struct FFlecsSimulationPublication
 	uint64 CommandsAppliedLastStep = 0;
 	uint64 PublishedDataItems = 0;
 	uint64 PublishedDataBytes = 0;
+	/** Allocated bytes in the latest copied publication, excluding shared owners. */
+	uint64 PublicationAllocatedBytes = 0;
+	/** Flecs-reported world memory, sampled only when flecs.Diagnostics.WorldMemory is enabled. */
+	uint64 WorldMemoryBytes = 0;
+	bool bWorldMemoryAvailable = false;
 	uint64 RejectedDataItems = 0;
 	double LastStepSeconds = 0.0;
 	double MaxStepSeconds = 0.0;

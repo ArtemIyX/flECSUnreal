@@ -1,4 +1,6 @@
 #include "Networking/FlecsGenericNetworkSessionSubsystem.h"
+#include "Diagnostics/FlecsNetworkDiagnosticsSubsystem.h"
+#include "Diagnostics/FlecsNetworkStats.h"
 #include "Networking/FlecsWorldMode.h"
 
 #include "Engine/World.h"
@@ -782,6 +784,7 @@ void UFlecsNetworkSessionSubsystem::ProcessServerCommandResults()
 void UFlecsNetworkSessionSubsystem::ProcessServerReplication()
 {
 	check(IsInGameThread());
+	SCOPE_CYCLE_COUNTER(STAT_FlecsNetworkState);
 	UWorld* World = GetWorld();
 	UFlecsGameInstanceSubsystem* FlecsSubsystem = FlecsGameInstanceSubsystem.Get();
 	if (bRetirementFailClosed || !World || World->GetNetMode() == NM_Client || !FlecsSubsystem || !WorkerBridgeState.IsValid())
@@ -873,6 +876,7 @@ void UFlecsNetworkSessionSubsystem::ProcessServerReplication()
 		return;
 	}
 	const double NowSeconds = FPlatformTime::Seconds();
+	if (auto* Diagnostics = World->GetSubsystem<UFlecsNetworkDiagnosticsSubsystem>()) Diagnostics->ResetRelevance();
 	for (TPair<TWeakObjectPtr<APlayerController>, FPeerSession>& Pair : PeerSessions)
 	{
 		FPeerSession& Session = Pair.Value;
@@ -1109,6 +1113,12 @@ void UFlecsNetworkSessionSubsystem::ProcessServerReplication()
 				RejectPeerManifest(Session.Incarnation, Reason.Left(512));
 				continue;
 			}
+			if (auto* Diagnostics = World->GetSubsystem<UFlecsNetworkDiagnosticsSubsystem>())
+			{
+				uint64 PayloadBytes = 0;
+				for (const FFlecsReplicationRecord& Record : Runtime.PendingWireRecords) PayloadBytes += Record.Payload.Num();
+				Diagnostics->RecordPayload(0, true, PayloadBytes);
+			}
 			Runtime.bTransferPending = true;
 			Runtime.TransferRetryCount = 0;
 #if WITH_DEV_AUTOMATION_TESTS
@@ -1183,10 +1193,14 @@ void UFlecsNetworkSessionSubsystem::ProcessServerReplication()
 			continue;
 		}
 		FFlecsRelevanceSelection Selection;
-		if (!Runtime.Scheduler.Select(SpatialIndex, Interest, NowSeconds, Budget, Selection))
+		bool bSelected = false;
 		{
-			continue;
+			SCOPE_CYCLE_COUNTER(STAT_FlecsNetworkSelect);
+			bSelected = Runtime.Scheduler.Select(SpatialIndex, Interest, NowSeconds, Budget, Selection);
 		}
+		if (!bSelected) continue;
+		if (auto* Diagnostics = World->GetSubsystem<UFlecsNetworkDiagnosticsSubsystem>())
+			Diagnostics->AddRelevance(Selection.Metrics.CurrentlyRelevant, Selection.Metrics.SelectedRecords, Selection.Metrics.DeferredByBudget);
 		if (Selection.Metrics.OversizedEntityCount > 0)
 		{
 			const FFlecsNetworkEntityKey& Oversized = Selection.Metrics.FirstOversizedEntity;

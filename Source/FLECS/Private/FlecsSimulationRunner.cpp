@@ -1,8 +1,16 @@
 #include "FlecsSimulationRunner.h"
+#include "Diagnostics/FlecsStats.h"
+#include "HAL/IConsoleManager.h"
 
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformTime.h"
 #include "HAL/PlatformTLS.h"
+
+namespace
+{
+ TAutoConsoleVariable<int32> CVarFlecsWorldMemory(TEXT("flecs.Diagnostics.WorldMemory"), 0,
+  TEXT("Sample Flecs-reported world memory at most once per second (0 off, 1 on)."), ECVF_Default);
+}
 
 FFlecsSimulationRunner::FFlecsSimulationRunner(uint64 InEpoch, double InSimulationRateHz)
 	: Epoch(InEpoch)
@@ -291,6 +299,7 @@ uint32 FFlecsSimulationRunner::Run()
 			continue;
 		}
 
+		SCOPE_CYCLE_COUNTER(STAT_FlecsWorkerStep);
 		const double StartTime = FPlatformTime::Seconds();
 		LastDeadlineLatenessSeconds = FMath::Max(0.0, StartTime - Deadline);
 		check(FPlatformTLS::GetCurrentThreadId() == OwnerThreadId);
@@ -301,7 +310,31 @@ uint32 FFlecsSimulationRunner::Run()
 		{
 			break;
 		}
-		World.progress(static_cast<ecs_ftime_t>(SimulationStepSeconds));
+		INC_DWORD_STAT_BY(STAT_FlecsCommands, CommandsAppliedLastStep);
+		{
+			SCOPE_CYCLE_COUNTER(STAT_FlecsWorldProgress);
+			World.progress(static_cast<ecs_ftime_t>(SimulationStepSeconds));
+		}
+		if (CVarFlecsWorldMemory.GetValueOnAnyThread() != 0)
+		{
+			if (StartTime >= NextMemorySampleSeconds)
+			{
+				const ecs_size_t Measured = ecs_memory_get(World.c_ptr());
+				const uint64 Sample = Measured >= 0 ? static_cast<uint64>(Measured) : 0;
+				if (Sample >= WorldMemoryBytes) INC_MEMORY_STAT_BY(STAT_FlecsWorldMemory, Sample - WorldMemoryBytes);
+				else DEC_MEMORY_STAT_BY(STAT_FlecsWorldMemory, WorldMemoryBytes - Sample);
+				WorldMemoryBytes = Sample;
+				bWorldMemoryAvailable = Measured >= 0;
+				NextMemorySampleSeconds = StartTime + 1.0;
+			}
+		}
+		else if (bWorldMemoryAvailable)
+		{
+			DEC_MEMORY_STAT_BY(STAT_FlecsWorldMemory, WorldMemoryBytes);
+			WorldMemoryBytes = 0;
+			bWorldMemoryAvailable = false;
+			NextMemorySampleSeconds = 0.0;
+		}
 		++Tick;
 		++Steps;
 		PublishData(World);
@@ -322,6 +355,7 @@ uint32 FFlecsSimulationRunner::Run()
 			{
 				const uint64 SkippedDeadlines = static_cast<uint64>(Lateness / SimulationStepSeconds) + 1;
 				MissedDeadlines += SkippedDeadlines;
+				INC_DWORD_STAT_BY(STAT_FlecsMissedDeadlines, static_cast<uint32>(FMath::Min<uint64>(SkippedDeadlines, MAX_uint32)));
 				Deadline += SkippedDeadlines * SimulationStepSeconds;
 				bUsedImmediateCatchUp = false;
 			}
@@ -336,6 +370,8 @@ uint32 FFlecsSimulationRunner::Run()
 	// controls (and discard gameplay commands) before paired shutdown callbacks.
 	ProcessQueuedWork(World, MaxQueuedCommands, true);
 	ShutdownLifecycles(World);
+	if (bWorldMemoryAvailable) DEC_MEMORY_STAT_BY(STAT_FlecsWorldMemory, WorldMemoryBytes);
+	DEC_MEMORY_STAT_BY(STAT_FlecsPublicationMemory, PublicationAllocatedBytes);
 	return 0;
 }
 
@@ -444,6 +480,9 @@ void FFlecsSimulationRunner::Publish(double StepSeconds)
 	NewPublication->CommandsAppliedLastStep = CommandsAppliedLastStep;
 	NewPublication->PublishedDataItems = PublishedDataItems;
 	NewPublication->PublishedDataBytes = PublishedDataBytes;
+	NewPublication->PublicationAllocatedBytes = PublicationAllocatedBytes;
+	NewPublication->WorldMemoryBytes = WorldMemoryBytes;
+	NewPublication->bWorldMemoryAvailable = bWorldMemoryAvailable;
 	NewPublication->RejectedDataItems = RejectedDataItems;
 	NewPublication->LastStepSeconds = StepSeconds;
 	NewPublication->MaxStepSeconds = MaxStepSeconds;
@@ -451,6 +490,7 @@ void FFlecsSimulationRunner::Publish(double StepSeconds)
 	{
 		std::lock_guard<std::mutex> QueueLock(QueueMutex);
 		NewPublication->QueueDepth = static_cast<int32>(Commands.size());
+		INC_DWORD_STAT_BY(STAT_FlecsQueueDepth, NewPublication->QueueDepth);
 		if (!Commands.empty())
 		{
 			NewPublication->OldestCommandAgeSeconds = FMath::Max(0.0, FPlatformTime::Seconds() - Commands.front().EnqueuedAt);
@@ -462,6 +502,7 @@ void FFlecsSimulationRunner::Publish(double StepSeconds)
 
 void FFlecsSimulationRunner::PublishData(flecs::world& World)
 {
+	SCOPE_CYCLE_COUNTER(STAT_FlecsPublication);
 	FFlecsSimulationDataBuilder Builder;
 	for (TPair<FName, FFlecsWorkerDataPublisher>& Entry : DataPublishers)
 	{
@@ -479,6 +520,12 @@ void FFlecsSimulationRunner::PublishData(flecs::world& World)
 	NewDataPublication->TotalBytes = Builder.GetTotalBytes();
 	NewDataPublication->RejectedItems = Builder.GetRejectedItems();
 	NewDataPublication->Items = Builder.TakeItems();
+	uint64 NewAllocatedBytes = sizeof(FFlecsSimulationDataPublication) + NewDataPublication->Items.GetAllocatedSize();
+	for (const FFlecsSimulationDataItem& Item : NewDataPublication->Items) NewAllocatedBytes += Item.Payload.GetAllocatedSize();
+	if (NewAllocatedBytes >= PublicationAllocatedBytes) INC_MEMORY_STAT_BY(STAT_FlecsPublicationMemory, NewAllocatedBytes - PublicationAllocatedBytes);
+	else DEC_MEMORY_STAT_BY(STAT_FlecsPublicationMemory, PublicationAllocatedBytes - NewAllocatedBytes);
+	PublicationAllocatedBytes = NewAllocatedBytes;
+	INC_DWORD_STAT_BY(STAT_FlecsPublicationItems, PublishedDataItems);
 	FScopeLock Lock(&PublicationMutex);
 	DataPublication = MoveTemp(NewDataPublication);
 }

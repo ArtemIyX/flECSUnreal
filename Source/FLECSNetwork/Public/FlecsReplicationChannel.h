@@ -10,6 +10,8 @@
 #include "Data/Structs/FlecsReplicationRecord.h"
 #include "Data/Structs/FlecsReplicationRecordArray.h"
 #include "Data/Structs/FlecsManifestAssembly.h"
+#include "Diagnostics/FlecsLogicalSequence.h"
+#include "Diagnostics/FlecsLogicalStateBatch.h"
 #include "FlecsReplicationChannel.generated.h"
 
 class AFlecsReplicationChannel;
@@ -67,6 +69,9 @@ public:
 	bool IsManifestHandshakePending(uint64 ServerWorldEpoch) const;
 	bool ConsumePendingManifestDescriptor(uint64& OutServerWorldEpoch, TArray<uint8>& OutDescriptor);
 	bool ConsumePendingManifestResult(uint64& OutServerWorldEpoch, bool& bOutCompatible, FString& OutReason);
+
+	/** Allocated manifest and state buffers, excluding UObject and external Iris allocations. */
+	uint64 GetDiagnosticsAllocatedBytes() const;
 
 	/** Start one ACK-paced selected-state update batch. Limits are 16,384 records and 4 MiB encoded budget; overflow fails closed. */
 	bool PublishUpdateBatch(uint64 InWorldEpoch, const TArray<FFlecsReplicationRecord>& Records, uint32 InSimulationTick);
@@ -128,6 +133,7 @@ private:
 #endif
 	void HandleReplicatedSnapshot();
 	void HandleCommand(const FFlecsCommandEnvelope& Envelope, bool bIsDiscrete);
+	void RecordOutgoingCommand(const FFlecsCommandEnvelope& Envelope, bool bIsDiscrete);
 	void SendDiscreteCommandResult(uint64 WorldEpoch, uint32 Sequence, uint8 ResultCode);
 	void PumpSnapshotWindow();
 	void HandleSnapshotWindowAcknowledgement(uint64 ServerWorldEpoch, uint32 TransferId, uint64 SnapshotRevision,
@@ -236,6 +242,9 @@ private:
 	bool bPendingManifestResult = false;
 	bool bPendingManifestResultCompatible = false;
 	FString PendingManifestResultReason;
+	FFlecsLogicalStateBatch DiagnosticLastAcceptedState;
+	FFlecsLogicalSequence DiagnosticDiscreteSent;
+	FFlecsLogicalSequence DiagnosticContinuousSent;
 	uint32 LastDiscreteCommandSequence = 0;
 	TMap<uint32, uint8> PendingDiscreteCommandResults;
 	TMap<uint32, uint8> CompletedDiscreteCommandResults;

@@ -1,5 +1,7 @@
 #include "FlecsReplicationChannel.h"
+#include "Diagnostics/FlecsNetworkDiagnosticsSubsystem.h"
 
+#include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
 #include "Net/UnrealNetwork.h"
 
@@ -310,6 +312,8 @@ void AFlecsReplicationChannel::SendManifestChunks(uint64 ServerWorldEpoch, const
 	OutgoingManifest.TransferId = TransferId;
 	OutgoingManifest.ChunkCount = static_cast<uint16>((Bytes.Num() + ManifestChunkBytes - 1) / ManifestChunkBytes);
 	OutgoingManifest.Bytes = Bytes;
+	if (UWorld* World = GetWorld()) if (auto* Diagnostics = World->GetSubsystem<UFlecsNetworkDiagnosticsSubsystem>())
+		Diagnostics->RecordPayload(2, true, Bytes.Num());
 	PumpManifestChunkWindow();
 }
 
@@ -460,6 +464,8 @@ bool AFlecsReplicationChannel::ReceiveManifestChunk(const FFlecsManifestChunk& C
 		OutCompleteDescriptor.Append(Part);
 	}
 	const bool bComplete = OutCompleteDescriptor.Num() == IncomingManifest.TotalBytes;
+	if (bComplete) if (UWorld* World = GetWorld()) if (auto* Diagnostics = World->GetSubsystem<UFlecsNetworkDiagnosticsSubsystem>())
+		Diagnostics->RecordPayload(2, false, OutCompleteDescriptor.Num());
 	IncomingManifest = FFlecsManifestAssembly();
 	return bComplete;
 }
@@ -772,6 +778,16 @@ bool AFlecsReplicationChannel::PublishUpdateBatch(uint64 InWorldEpoch, const TAr
 	return true;
 }
 
+uint64 AFlecsReplicationChannel::GetDiagnosticsAllocatedBytes() const
+{
+ uint64 Bytes = OutgoingManifest.Bytes.GetAllocatedSize() + OutgoingSnapshotTransfer.Records.GetAllocatedSize() +
+  IncomingSnapshotTransfer.Records.GetAllocatedSize() + IncomingSnapshotTransfer.ReceivedIndices.GetAllocatedSize() +
+  IncomingManifest.Chunks.GetAllocatedSize() + IncomingManifest.ReceivedChunks.GetAllocatedSize() +
+  PendingManifestDescriptor.GetAllocatedSize() + ReplicatedState.Items.GetAllocatedSize() + DiagnosticLastAcceptedState.Records.GetAllocatedSize();
+ for (const TArray<uint8>& Chunk : IncomingManifest.Chunks) Bytes += Chunk.GetAllocatedSize();
+ return Bytes;
+}
+
 FString AFlecsReplicationChannel::GetLastUpdateBatchRejectionReason() const
 {
 	check(IsInGameThread());
@@ -824,6 +840,11 @@ bool AFlecsReplicationChannel::CompleteReceivedSnapshotBatch(uint64 InWorldEpoch
 			LastReceivedStateSimulationTick = IncomingSnapshotTransfer.SimulationTick;
 			CurrentSimulationTick = FMath::Max(CurrentSimulationTick, IncomingSnapshotTransfer.SimulationTick);
 		}
+	}
+	if (bAccepted && DiagnosticLastAcceptedState.Accept(InWorldEpoch, IncomingSnapshotTransfer.SimulationTick, IncomingSnapshotTransfer.Records))
+	{
+		if (UWorld* World = GetWorld()) if (auto* Diagnostics = World->GetSubsystem<UFlecsNetworkDiagnosticsSubsystem>())
+			Diagnostics->RecordPayload(0, false, IncomingSnapshotTransfer.ReceivedPayloadBytes);
 	}
 	SendSnapshotWindowAcknowledgement(InWorldEpoch, IncomingSnapshotTransfer.TransferId, InSnapshotRevision, FinalRecordIndex, bAccepted);
 	IncomingSnapshotTransfer = FIncomingSnapshotTransfer();
@@ -1151,11 +1172,20 @@ void AFlecsReplicationChannel::OnRep_ServerTickHeartbeat()
 	}
 }
 
+void AFlecsReplicationChannel::RecordOutgoingCommand(const FFlecsCommandEnvelope& Envelope, bool bIsDiscrete)
+{
+ FFlecsLogicalSequence& Sequence = bIsDiscrete ? DiagnosticDiscreteSent : DiagnosticContinuousSent;
+ if (!Envelope.Payload.IsValid() || !Sequence.Accept(Envelope.WorldEpoch, Envelope.Sequence)) return;
+ if (UWorld* World = GetWorld()) if (auto* Diagnostics = World->GetSubsystem<UFlecsNetworkDiagnosticsSubsystem>())
+  Diagnostics->RecordPayload(1, true, Envelope.Payload.Num());
+}
+
 void AFlecsReplicationChannel::SubmitDiscreteCommand(const FFlecsCommandEnvelope& Envelope)
 {
 	check(IsInGameThread());
 	if (!HasAuthority() && bClientManifestValidated)
 	{
+		RecordOutgoingCommand(Envelope, true);
 		ServerSubmitDiscreteCommand(Envelope);
 	}
 }
@@ -1165,6 +1195,7 @@ void AFlecsReplicationChannel::SubmitContinuousCommand(const FFlecsCommandEnvelo
 	check(IsInGameThread());
 	if (!HasAuthority() && bClientManifestValidated)
 	{
+		RecordOutgoingCommand(Envelope, false);
 		ServerSubmitContinuousCommand(Envelope);
 	}
 }
@@ -1281,6 +1312,8 @@ void AFlecsReplicationChannel::HandleCommand(const FFlecsCommandEnvelope& Envelo
 		LastSequence = Envelope.Sequence;
 		PendingDiscreteCommandResults.Add(Envelope.Sequence, FlecsNetworkCommandResult::AcceptedForWorker);
 		++CommandsInWindow;
+		if (UWorld* World = GetWorld()) if (auto* Diagnostics = World->GetSubsystem<UFlecsNetworkDiagnosticsSubsystem>())
+			Diagnostics->RecordPayload(1, false, Envelope.Payload.Num());
 		OnDiscreteCommandReceived.Broadcast(Envelope);
 		SendDiscreteCommandResult(Envelope.WorldEpoch, Envelope.Sequence, FlecsNetworkCommandResult::AcceptedForWorker);
 	}
@@ -1288,6 +1321,8 @@ void AFlecsReplicationChannel::HandleCommand(const FFlecsCommandEnvelope& Envelo
 	{
 		LastSequence = Envelope.Sequence;
 		++CommandsInWindow;
+		if (UWorld* World = GetWorld()) if (auto* Diagnostics = World->GetSubsystem<UFlecsNetworkDiagnosticsSubsystem>())
+			Diagnostics->RecordPayload(1, false, Envelope.Payload.Num());
 		OnContinuousCommandReceived.Broadcast(Envelope);
 	}
 }
