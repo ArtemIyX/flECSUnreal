@@ -20,6 +20,9 @@ struct FFlecsSimulationPublication
 	uint64 WorldMemoryBytes = 0;
 	bool bWorldMemoryAvailable = false;
 	uint64 RejectedDataItems = 0;
+	/** Last step spent inside Flecs systems; measured only when explicitly enabled. */
+	double LastSystemSeconds = 0.0;
+	bool bSystemTimeAvailable = false;
 	double LastStepSeconds = 0.0;
 	double MaxStepSeconds = 0.0;
 	double LastDeadlineLatenessSeconds = 0.0;

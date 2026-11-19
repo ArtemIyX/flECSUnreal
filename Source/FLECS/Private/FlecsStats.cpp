@@ -8,3 +8,4 @@ DEFINE_STAT(STAT_FlecsWorldMemory);
 DEFINE_STAT(STAT_FlecsPublicationMemory);
 DEFINE_STAT(STAT_FlecsQueueDepth);
 DEFINE_STAT(STAT_FlecsMissedDeadlines);
+DEFINE_STAT(STAT_FlecsSystemMilliseconds);

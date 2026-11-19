@@ -87,6 +87,7 @@ void UFlecsNetworkDiagnosticsSubsystem::DrawOverlay(UCanvas* Canvas, APlayerCont
  {
   Text += FString::Printf(TEXT("Tick %llu | step %.3f ms | queue %d | missed %llu\nPublication allocated %llu B | "),
    Publication->Tick, Publication->LastStepSeconds * 1000.0, Publication->QueueDepth, Publication->MissedDeadlines, Publication->PublicationAllocatedBytes);
+  Text += Publication->bSystemTimeAvailable ? FString::Printf(TEXT("systems %.3f ms | "), Publication->LastSystemSeconds * 1000.0) : TEXT("system timing: disabled | ");
   Text += Publication->bWorldMemoryAvailable ? FString::Printf(TEXT("Flecs world %llu B\n"), Publication->WorldMemoryBytes) : TEXT("Flecs world memory: disabled\n");
  }
  Text += FString::Printf(TEXT("Totals state %llu/%llu, command %llu/%llu, manifest %llu/%llu B (sent/received)\n"),

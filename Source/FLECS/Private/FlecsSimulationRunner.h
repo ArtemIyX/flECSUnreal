@@ -102,6 +102,8 @@ private:
 	uint64 WorldMemoryBytes = 0;
 	bool bWorldMemoryAvailable = false;
 	double NextMemorySampleSeconds = 0.0;
+	double LastSystemSeconds = 0.0;
+	bool bSystemTimeAvailable = false;
 	uint64 RejectedDataItems = 0;
 	std::atomic<uint64> RejectedCommands{ 0 };
 	double MaxStepSeconds = 0.0;

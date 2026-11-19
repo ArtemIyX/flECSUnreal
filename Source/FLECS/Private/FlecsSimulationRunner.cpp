@@ -8,6 +8,8 @@
 
 namespace
 {
+ TAutoConsoleVariable<int32> CVarFlecsSystemTime(TEXT("flecs.Diagnostics.SystemTime"), 0,
+  TEXT("Measure time spent inside Flecs systems (0 off, 1 on)."), ECVF_Default);
  TAutoConsoleVariable<int32> CVarFlecsWorldMemory(TEXT("flecs.Diagnostics.WorldMemory"), 0,
   TEXT("Sample Flecs-reported world memory at most once per second (0 off, 1 on)."), ECVF_Default);
 }
@@ -311,10 +313,19 @@ uint32 FFlecsSimulationRunner::Run()
 			break;
 		}
 		INC_DWORD_STAT_BY(STAT_FlecsCommands, CommandsAppliedLastStep);
+		const bool bMeasureSystems = CVarFlecsSystemTime.GetValueOnAnyThread() != 0;
+		if (bMeasureSystems != bSystemTimeAvailable)
+		{
+			ecs_measure_system_time(World.c_ptr(), bMeasureSystems);
+			bSystemTimeAvailable = bMeasureSystems;
+		}
+		const double PreviousSystemTime = bMeasureSystems ? ecs_get_world_info(World.c_ptr())->system_time_total : 0.0;
 		{
 			SCOPE_CYCLE_COUNTER(STAT_FlecsWorldProgress);
 			World.progress(static_cast<ecs_ftime_t>(SimulationStepSeconds));
 		}
+		LastSystemSeconds = bMeasureSystems ? FMath::Max(0.0, static_cast<double>(ecs_get_world_info(World.c_ptr())->system_time_total) - PreviousSystemTime) : 0.0;
+		if (bMeasureSystems) INC_FLOAT_STAT_BY(STAT_FlecsSystemMilliseconds, LastSystemSeconds * 1000.0);
 		if (CVarFlecsWorldMemory.GetValueOnAnyThread() != 0)
 		{
 			if (StartTime >= NextMemorySampleSeconds)
@@ -484,6 +495,8 @@ void FFlecsSimulationRunner::Publish(double StepSeconds)
 	NewPublication->WorldMemoryBytes = WorldMemoryBytes;
 	NewPublication->bWorldMemoryAvailable = bWorldMemoryAvailable;
 	NewPublication->RejectedDataItems = RejectedDataItems;
+	NewPublication->LastSystemSeconds = LastSystemSeconds;
+	NewPublication->bSystemTimeAvailable = bSystemTimeAvailable;
 	NewPublication->LastStepSeconds = StepSeconds;
 	NewPublication->MaxStepSeconds = MaxStepSeconds;
 	NewPublication->LastDeadlineLatenessSeconds = LastDeadlineLatenessSeconds;
