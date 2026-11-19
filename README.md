@@ -190,16 +190,30 @@ sequenceDiagram
 
 Use `QueueSharedEntitySpawn` for an unowned authoritative entity and `QueuePeerEntitySpawn` for a peer-owned entity. Their return values report queue admission; `SharedSpawnFinished` and `PeerSpawnFinished` report worker completion. Client commands are subject to authoritative permission and validation checks.
 
+## Scaling networked worlds
+
+Configure capacity under **Project Settings → Plugins → FLECS → Networking → Limits**. These limits are captured when the network session starts.
+
+| Setting | Default | Purpose |
+| --- | ---: | --- |
+| `MaxNetworkEntities` | 5,000 | Maximum network-managed entities in the world; configurable up to 100,000. |
+| `MaxPeerOwnedEntities` | 256 | Maximum entities owned by one peer, bounded by the world capacity. |
+| `MaxRelevantEntitiesPerPeer` | 5,000 | Maximum relevant entities retained for one peer, bounded by the world capacity. |
+| `MaxRecordsPerPeerSelection` | 128 | Default entity-record budget for one peer selection; configurable up to 16,384. |
+| `MaxPayloadKiBPerPeerSelection` | 64 KiB | Default byte budget for one peer selection; configurable up to 4,096 KiB. |
+
+Server and client must use the same world entity capacity; the versioned session handshake rejects mismatches. A spawn over the world or ownership limit reports `LimitReached`. When a peer's relevance capacity or selection budget is full, additional eligible work is deferred. An entity leaving relevance keeps its slot until its exit is acknowledged. Local Flecs entities do not count against the network-managed world limit.
+
+The worker captures spatial metadata and live identities and transfers them to the game thread in bounded, acknowledged chunks. Relevance selection uses a complete generation; the server tick heartbeat can advance while a snapshot is in flight. The world limit is a capacity bound, not a performance guarantee: memory use, snapshot latency, and achievable update rates depend on your game. See [FLECSNetwork](Source/FLECSNetwork/README.md#capacity-and-per-peer-budgets) for retained-state limits and failure behavior.
+
 ## Settings and diagnostics
 
 **Project Settings → Plugins → FLECS** contains the simulation frequency and distance/update-rate tiers. Distances are in Unreal centimeters; rates are in Hz. Tier rates are replication limits, not simulation rates. Component caps, visibility, hysteresis, custom interest, budgets, and network conditions can further affect delivery.
 
-The networking limits also set a world capacity of up to 100,000 network-managed entities (default 5,000), a separate per-peer relevant-entity cap, and per-peer selection budgets. Configure matching world capacities on server and clients before starting a session. Spatial snapshots cross threads in bounded acknowledged chunks; incomplete generations are never used for relevance. High capacities increase memory and can increase snapshot latency. The limit is a capacity bound, not a performance guarantee. See [FLECSNetwork](Source/FLECSNetwork/README.md) for retained-baseline limits and compatibility details.
-
 | Console command | Purpose |
 | --- | --- |
 | `stat Flecs` | Worker step, Flecs progress, queue/publication counters, and memory stats. |
-| `stat FlecsNetwork` | Relevance and transfer cycles, payload counters, and tracked channel buffers. |
+| `stat FlecsNetwork` | Relevance and transfer cycles, payload counters, and tracked channel and partial spatial-container allocations. |
 | `flecs.Diagnostics.Overlay 1` | Show the local per-world plugin viewport overlay. |
 | `flecs.Diagnostics.WorldMemory 1` | Enable at-most-once-per-second Flecs world-memory sampling. |
 | `flecs.Diagnostics.SystemTime 1` | Enable Flecs system-time measurements. |
