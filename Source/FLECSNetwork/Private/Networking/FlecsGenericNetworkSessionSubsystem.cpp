@@ -1,4 +1,5 @@
 #include "Networking/FlecsGenericNetworkSessionSubsystem.h"
+#include "Networking/FlecsWorldMode.h"
 
 #include "Engine/World.h"
 #include "EngineUtils.h"
@@ -473,7 +474,7 @@ void UFlecsNetworkSessionSubsystem::Initialize(FSubsystemCollectionBase& Collect
 		UE_LOG(LogTemp, Error, TEXT("Failed to configure the Flecs network session: %s"), *ModRegistrationError);
 	}
 	if (UWorld* World = GetWorld(); World &&
-		(World->GetNetMode() == NM_ListenServer || World->GetNetMode() == NM_DedicatedServer))
+		FlecsHasAuthoritativeSimulation(World->GetNetMode()))
 	{
 		ServerWorldEpoch = ++NextServerWorldEpoch;
 		if (ServerWorldEpoch == 0)
@@ -1592,7 +1593,7 @@ bool UFlecsNetworkSessionSubsystem::InstallWorkerIntegration(FString& OutError)
 	const TSharedRef<FFlecsGenericWorkerBridgeState, ESPMode::ThreadSafe> BridgeRef = WorkerBridgeState.ToSharedRef();
 	const TMap<FString, FFlecsTrustedPermissionRule> PermissionRules = TrustedPermissionRules;
 	const TMap<FString, FFlecsTrustedSpatialDefinition> SpatialDefinitions = TrustedSpatialDefinitions;
-	const bool bAuthoritative = GetWorld() && GetWorld()->GetNetMode() != NM_Client;
+	const bool bAuthoritative = GetWorld() && FlecsHasAuthoritativeSimulation(GetWorld()->GetNetMode());
 	const uint64 CapturedServerWorldEpoch = bAuthoritative ? ServerWorldEpoch : 0;
 	const uint64 ExpectedLocalEpoch = FlecsSubsystem->GetActiveEpoch();
 
