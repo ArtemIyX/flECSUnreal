@@ -34,6 +34,7 @@
 #pragma comment(linker, "/export:ecs_stage_free")
 #pragma comment(linker, "/export:ecs_stage_get_id")
 #pragma comment(linker, "/export:ecs_entity_init")
+#pragma comment(linker, "/export:ecs_lookup_path_w_sep")
 #pragma comment(linker, "/export:ecs_get_target")
 #pragma comment(linker, "/export:ecs_get_world_info")
 #pragma comment(linker, "/export:ecs_delete")
