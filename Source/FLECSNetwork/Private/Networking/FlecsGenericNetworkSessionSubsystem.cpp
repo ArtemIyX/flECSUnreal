@@ -484,7 +484,7 @@ bool UFlecsNetworkSessionSubsystem::TryConfigureSession()
 		bModRegistrySetupFailed = true;
 		UE_LOG(LogTemp, Error, TEXT("Failed to configure the Flecs network session: %s"), *ModRegistrationError);
 	}
-	if (UWorld* World = GetWorld(); World &&
+	if (World = GetWorld(); World &&
 		FlecsHasAuthoritativeSimulation(World->GetNetMode()))
 	{
 		ServerWorldEpoch = ++NextServerWorldEpoch;

@@ -46,7 +46,7 @@ public:
 
 	static TArray<FFlecsRelevanceTier> MakeDefaultTiers();
 	bool Select(const FFlecsSpatialIndex& Index, const FFlecsConnectionInterest& Interest,
-		double NowSeconds, const FFlecsRelevanceBudget& Budget, FFlecsRelevanceSelection& OutSelection);
+	            double NowSeconds, const FFlecsRelevanceBudget& Budget, FFlecsRelevanceSelection& OutSelection);
 	bool CompleteSelection(uint64 SelectionId, bool bHandedToTransport, double HandedAtSeconds);
 	/** Clear per-connection relevance state; epoch and generation history never move backwards. */
 	bool Reset(uint64 NewWorldEpoch = 0);
@@ -71,7 +71,7 @@ private:
 	};
 
 	bool IsRelevant(const FFlecsSpatialEntity& Entity, const FFlecsConnectionInterest& Interest,
-		const FTrackedState* Previous, uint8& OutTier) const;
+	                const FTrackedState* Previous, uint8& OutTier) const;
 	static double GetTierPeriod(const FFlecsConnectionInterest& Interest, uint8 Tier, float EntityRateCapHz);
 
 	TMap<FFlecsNetworkEntityKey, FTrackedState> Tracked;

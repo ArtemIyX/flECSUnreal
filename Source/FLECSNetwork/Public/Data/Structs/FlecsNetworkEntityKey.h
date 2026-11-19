@@ -14,12 +14,15 @@ struct FLECSNETWORK_API FFlecsNetworkEntityKey
 	uint16 Generation = 0;
 
 	bool IsValid() const { return WorldEpoch != 0 && EntityId != 0 && Generation != 0; }
+
 	friend bool operator==(const FFlecsNetworkEntityKey& A, const FFlecsNetworkEntityKey& B)
 	{
 		return A.WorldEpoch == B.WorldEpoch && A.EntityId == B.EntityId && A.Generation == B.Generation;
 	}
+
 	friend uint32 GetTypeHash(const FFlecsNetworkEntityKey& Key)
 	{
-		return HashCombine(HashCombine(GetTypeHash(Key.WorldEpoch), GetTypeHash(Key.EntityId)), GetTypeHash(Key.Generation));
+		return HashCombine(HashCombine(GetTypeHash(Key.WorldEpoch), GetTypeHash(Key.EntityId)),
+		                   GetTypeHash(Key.Generation));
 	}
 };
