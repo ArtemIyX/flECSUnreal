@@ -37,15 +37,15 @@ public:
 
 	bool Start(TArray<FWorkerCommand>&& StartupCommands, TArray<FFlecsNamedWorkerDataPublisher>&& StartupPublishers,
 		TArray<FFlecsNamedWorkerLifecycle>&& StartupLifecycles = {});
-	bool Start(TArray<FWorkerCommand>&& StartupCommands, TArray<FFlecsWorkerDataPublisher>&& StartupPublishers)
+	bool Start(TArray<FWorkerCommand>&& InCommands, TArray<FFlecsWorkerDataPublisher>&& InPublishers)
 	{
 		TArray<FFlecsNamedWorkerDataPublisher> NamedPublishers;
-		NamedPublishers.Reserve(StartupPublishers.Num());
-		for (int32 Index = 0; Index < StartupPublishers.Num(); ++Index)
+		NamedPublishers.Reserve(InPublishers.Num());
+		for (int32 Index = 0; Index < InPublishers.Num(); ++Index)
 		{
-			NamedPublishers.Add({ FName(*FString::Printf(TEXT("LegacyPublisher_%d"), Index)), MoveTemp(StartupPublishers[Index]) });
+			NamedPublishers.Add({ FName(*FString::Printf(TEXT("LegacyPublisher_%d"), Index)), MoveTemp(InPublishers[Index]) });
 		}
-		return Start(MoveTemp(StartupCommands), MoveTemp(NamedPublishers), TArray<FFlecsNamedWorkerLifecycle>());
+		return Start(MoveTemp(InCommands), MoveTemp(NamedPublishers), TArray<FFlecsNamedWorkerLifecycle>());
 	}
 	bool Start() { return Start(TArray<FWorkerCommand>(), TArray<FFlecsNamedWorkerDataPublisher>(), TArray<FFlecsNamedWorkerLifecycle>()); }
 	void StopAndJoin();
