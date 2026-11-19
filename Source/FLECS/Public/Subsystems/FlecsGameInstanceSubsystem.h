@@ -28,11 +28,12 @@ public:
 	bool IsWorldReady(const UWorld& InWorld) const;
 	uint64 GetWorldSerial() const { return WorldSerial; }
 	uint64 GetWorldGeneration() const { return WorldGeneration; }
+	uint64 GetActiveEpoch() const;
 	FName MakeWorldSystemName(FName InSystemName) const;
 
 	/** Queue bounded work for the simulation thread. The callback runs on that thread
 	 * and must not capture or access any UObject or Unreal connection state. */
-	bool SubmitWorkerCommand(FFlecsWorkerCommand&& Command);
+	EFlecsWorkerCommandResult SubmitWorkerCommand(uint64 ExpectedEpoch, FFlecsWorkerCommand&& Command);
 	bool RegisterPersistentWorkerCommand(FName Name, FFlecsWorkerCommand&& Command);
 	TSharedPtr<const FFlecsSimulationPublication, ESPMode::ThreadSafe> GetPublication() const;
 	void SetSimulationPaused(bool bPaused);

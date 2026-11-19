@@ -22,3 +22,12 @@ struct FFlecsSimulationPublication
 };
 
 using FFlecsWorkerCommand = std::function<void(flecs::world&)>;
+
+enum class EFlecsWorkerCommandResult : uint8
+{
+	Accepted,
+	InvalidCommand,
+	StaleEpoch,
+	QueueFull,
+	Stopping
+};

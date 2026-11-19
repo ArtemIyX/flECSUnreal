@@ -8,6 +8,7 @@ FFlecsSimulationRunner::FFlecsSimulationRunner(uint64 InEpoch)
 	: Epoch(InEpoch)
 {
 	WakeEvent = FPlatformProcess::GetSynchEventFromPool(false);
+	InitializedEvent = FPlatformProcess::GetSynchEventFromPool(false);
 }
 
 FFlecsSimulationRunner::~FFlecsSimulationRunner()
@@ -18,17 +19,41 @@ FFlecsSimulationRunner::~FFlecsSimulationRunner()
 		FPlatformProcess::ReturnSynchEventToPool(WakeEvent);
 		WakeEvent = nullptr;
 	}
+	if (InitializedEvent)
+	{
+		FPlatformProcess::ReturnSynchEventToPool(InitializedEvent);
+		InitializedEvent = nullptr;
+	}
 }
 
-bool FFlecsSimulationRunner::Start()
+bool FFlecsSimulationRunner::Start(TArray<FWorkerCommand>&& InStartupCommands)
 {
-	if (Thread || !WakeEvent)
+	if (Thread || !WakeEvent || !InitializedEvent || InStartupCommands.Num() > MaxQueuedCommands)
 	{
 		return false;
 	}
+	for (const FWorkerCommand& Command : InStartupCommands)
+	{
+		if (!Command)
+		{
+			return false;
+		}
+	}
+	StartupCommands = MoveTemp(InStartupCommands);
+	bInitializationSucceeded.store(false, std::memory_order_release);
 	bStopping.store(false, std::memory_order_release);
 	Thread = FRunnableThread::Create(this, TEXT("FlecsSimulation"), 0, TPri_Normal);
-	return Thread != nullptr;
+	if (!Thread)
+	{
+		return false;
+	}
+	InitializedEvent->Wait();
+	if (!bInitializationSucceeded.load(std::memory_order_acquire))
+	{
+		StopAndJoin();
+		return false;
+	}
+	return true;
 }
 
 void FFlecsSimulationRunner::StopAndJoin()
@@ -44,22 +69,34 @@ void FFlecsSimulationRunner::StopAndJoin()
 	Thread = nullptr;
 }
 
-bool FFlecsSimulationRunner::Submit(FWorkerCommand&& Command)
+EFlecsWorkerCommandResult FFlecsSimulationRunner::Submit(uint64 ExpectedEpoch, FWorkerCommand&& Command)
 {
-	if (!Command || bStopping.load(std::memory_order_acquire))
+	if (!Command)
 	{
-		return false;
+		return EFlecsWorkerCommandResult::InvalidCommand;
+	}
+	if (ExpectedEpoch != Epoch)
+	{
+		return EFlecsWorkerCommandResult::StaleEpoch;
+	}
+	if (bStopping.load(std::memory_order_acquire))
+	{
+		return EFlecsWorkerCommandResult::Stopping;
 	}
 	{
 		std::lock_guard<std::mutex> Lock(QueueMutex);
-		if (Commands.size() >= MaxQueuedCommands || bStopping.load(std::memory_order_relaxed))
+		if (bStopping.load(std::memory_order_relaxed))
+		{
+			return EFlecsWorkerCommandResult::Stopping;
+		}
+		if (Commands.size() >= MaxQueuedCommands)
 		{
 			RejectedCommands.fetch_add(1, std::memory_order_relaxed);
-			return false;
+			return EFlecsWorkerCommandResult::QueueFull;
 		}
 		Commands.push_back({ std::move(Command), FPlatformTime::Seconds() });
 	}
-	return true;
+	return EFlecsWorkerCommandResult::Accepted;
 }
 
 void FFlecsSimulationRunner::SetPaused(bool bInPaused)
@@ -79,6 +116,14 @@ uint32 FFlecsSimulationRunner::Run()
 	// The Flecs world is intentionally created and destroyed on this thread.
 	OwnerThreadId = FPlatformTLS::GetCurrentThreadId();
 	flecs::world World;
+	for (FWorkerCommand& Command : StartupCommands)
+	{
+		check(FPlatformTLS::GetCurrentThreadId() == OwnerThreadId);
+		Command(World);
+	}
+	StartupCommands.Empty();
+	bInitializationSucceeded.store(true, std::memory_order_release);
+	InitializedEvent->Trigger();
 	double Deadline = FPlatformTime::Seconds();
 	bool bUsedImmediateCatchUp = false;
 	while (!bStopping.load(std::memory_order_acquire))

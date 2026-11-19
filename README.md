@@ -172,7 +172,12 @@ a real-time guarantee.
 Submit bounded commands through `SubmitWorkerCommand`, or register systems via
 the subsystem registration helpers. These callbacks execute on the simulation
 worker. They must not capture or access UObjects, the game thread, or Unreal
-network objects. The queue rejects work after its 1,024-command capacity and
+network objects. External submissions must include the current value from
+`GetActiveEpoch`; stale epochs are rejected with an explicit result. World
+subsystem registrations also verify that their attached world is still active.
+Attach waits for persistent registration callbacks to finish on the worker
+before broadcasting world-attached and before the first simulation step. The
+queue rejects work after its 1,024-command capacity and
 reports rejection count, depth, and oldest queued-command age in the immutable
 simulation publication. The publication also reports epoch, tick, commands
 applied at the last boundary, step time, maximum step time, deadline lateness,

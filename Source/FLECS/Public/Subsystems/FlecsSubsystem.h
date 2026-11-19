@@ -23,14 +23,20 @@ public:
 	bool RegisterOnUpdateSystem(const FName SystemName, FuncType&& Func)
 	{
 		UFlecsGameInstanceSubsystem* Owner = GetOwnerSubsystem();
-		if (!Owner || SystemName.IsNone())
+		UWorld* WorldContext = GetWorld();
+		if (!Owner || !WorldContext || !Owner->IsWorldReady(*WorldContext) || SystemName.IsNone())
+		{
+			return false;
+		}
+		const uint64 ExpectedEpoch = Owner->GetActiveEpoch();
+		if (ExpectedEpoch == 0)
 		{
 			return false;
 		}
 		const FName ScopedName = Owner->MakeWorldSystemName(SystemName);
 		FTCHARToUTF8 ConvertedName(*ScopedName.ToString());
 		const std::string WorkerName(ConvertedName.Get());
-		return Owner->SubmitWorkerCommand([WorkerName, Callback = Forward<FuncType>(Func)](flecs::world& World) mutable
+		return Owner->SubmitWorkerCommand(ExpectedEpoch, [WorkerName, Callback = Forward<FuncType>(Func)](flecs::world& World) mutable
 		{
 			flecs::entity Existing = World.lookup(WorkerName.c_str());
 			if (Existing.is_alive())
@@ -40,7 +46,7 @@ public:
 			World.system<Components...>(WorkerName.c_str())
 				.kind(flecs::OnUpdate)
 				.each(MoveTemp(Callback));
-		});
+		}) == EFlecsWorkerCommandResult::Accepted;
 	}
 
 	bool UnregisterSystem(FName SystemName);

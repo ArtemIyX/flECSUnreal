@@ -29,9 +29,14 @@ public:
 	FFlecsSimulationRunner(const FFlecsSimulationRunner&) = delete;
 	FFlecsSimulationRunner& operator=(const FFlecsSimulationRunner&) = delete;
 
-	bool Start();
+	bool Start(TArray<FWorkerCommand>&& StartupCommands);
+	bool Start() { return Start(TArray<FWorkerCommand>()); }
 	void StopAndJoin();
-	bool Submit(FWorkerCommand&& Command);
+	EFlecsWorkerCommandResult Submit(uint64 ExpectedEpoch, FWorkerCommand&& Command);
+	bool Submit(FWorkerCommand&& Command)
+	{
+		return Submit(Epoch, MoveTemp(Command)) == EFlecsWorkerCommandResult::Accepted;
+	}
 	void SetPaused(bool bInPaused);
 	TSharedPtr<const FFlecsSimulationPublication, ESPMode::ThreadSafe> GetPublication() const;
 	uint64 GetEpoch() const { return Epoch; }
@@ -45,6 +50,9 @@ private:
 	const uint64 Epoch;
 	FRunnableThread* Thread = nullptr;
 	FEvent* WakeEvent = nullptr;
+	FEvent* InitializedEvent = nullptr;
+	TArray<FWorkerCommand> StartupCommands;
+	std::atomic<bool> bInitializationSucceeded{ false };
 	std::mutex QueueMutex;
 	std::deque<FQueuedCommand> Commands;
 	std::atomic<bool> bStopping{ false };
