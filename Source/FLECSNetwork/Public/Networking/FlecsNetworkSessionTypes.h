@@ -80,7 +80,6 @@ enum class EFlecsPeerSessionState : uint8
 	AwaitingManifest,
 	Compatible,
 	Rejected,
-	PeerSpawnFinished,
 	Closing
 };
 
@@ -100,6 +99,7 @@ enum class EFlecsSessionEventKind : uint8
 {
 	Compatible,
 	Rejected,
+	PeerSpawnFinished,
 	ClientStateApplied,
 	ServerTransferStarted,
 	ServerTransferAcknowledged,
