@@ -5,6 +5,7 @@
 
 class APlayerController;
 class AFlecsReplicationChannel;
+class UWorld;
 
 /** Worker-safe native permission callback; it must not access UObjects. */
 using FFlecsTrustedPermissionRule = TFunction<bool(uint64 ConnectionToken, uint64 OwnerConnectionToken,
@@ -43,6 +44,10 @@ struct FFlecsNetworkSessionRegistrar
 	TFunctionRef<bool(const FString&, EFlecsTrustedSpatialPolicy, FFlecsTrustedPositionAccessor, FString&)> RegisterSpatial;
 	TFunctionRef<bool(FFlecsPeerSpawnFactory, FString&)> SetPeerSpawnFactory;
 };
+
+/** Called once per world before registry freeze; register only trusted worker-safe callbacks. */
+using FFlecsNetworkSessionConfigurator = TFunction<bool(UWorld& World,
+	FFlecsNetworkSessionRegistrar& Registrar, FString& OutError)>;
 
 /** Opaque identity for one observed player connection incarnation. */
 struct FConnectionIncarnation
