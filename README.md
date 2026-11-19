@@ -1,8 +1,6 @@
 <div align="center">
 
-<!-- Header image placeholder: add your artwork to Resources and replace the path below.
-<img src="Resources/header-placeholder.png" alt="Flecs Unreal header" width="100%" />
--->
+<img width="1280" height="640" alt="Header" src="https://github.com/user-attachments/assets/88693035-9d38-4cb5-af78-95554973c5dd" />
 
 # Flecs Unreal
 
