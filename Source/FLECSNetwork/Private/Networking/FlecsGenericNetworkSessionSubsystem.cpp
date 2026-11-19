@@ -31,8 +31,33 @@ namespace
 	constexpr int32 MaxPendingRetiredIncarnations = 1024;
 	constexpr int32 MaxPeerOwnedEntities = 256;
 	constexpr int32 SpatialMetadataPayloadFixedBytes = 55;
+	constexpr float MaxPeerInterestDistance = 1000000.0f; // Match the relevance scheduler's accepted range.
 	uint64 NextServerWorldEpoch = 0;
 	uint64 NextConnectionIncarnation = 0;
+
+	bool IsValidPeerInterest(const FFlecsConnectionInterest& Interest, const FFlecsRelevanceBudget& Budget)
+	{
+		if (Interest.Tiers.IsEmpty() || Interest.Tiers.Num() > static_cast<int32>(FFlecsPerConnectionScheduler::MaxTiers) ||
+			Interest.VisibilityOverrides.Num() > FFlecsPerConnectionScheduler::MaxTrackedEntities ||
+			!FMath::IsFinite(Interest.HysteresisDistance) || Interest.HysteresisDistance < 0.0f ||
+			Interest.HysteresisDistance > MaxPeerInterestDistance ||
+			!FMath::IsFinite(Interest.ViewPosition.X) || !FMath::IsFinite(Interest.ViewPosition.Y) ||
+			!FMath::IsFinite(Interest.ViewPosition.Z) ||
+			FMath::Abs(Interest.ViewPosition.X) > MaxPeerInterestDistance * 10.0f ||
+			FMath::Abs(Interest.ViewPosition.Y) > MaxPeerInterestDistance * 10.0f ||
+			FMath::Abs(Interest.ViewPosition.Z) > MaxPeerInterestDistance * 10.0f ||
+			Budget.MaxRecords == 0 || Budget.MaxRecords > static_cast<uint32>(MaxChannelUpdateRecords) ||
+			Budget.MaxBytes == 0 || Budget.MaxBytes > MaxChannelUpdatePayloadBytes) return false;
+		float PreviousRadius = 0.0f;
+		for (const FFlecsRelevanceTier& Tier : Interest.Tiers)
+		{
+			if (!FMath::IsFinite(Tier.MaxDistance) || Tier.MaxDistance <= PreviousRadius ||
+				Tier.MaxDistance > MaxPeerInterestDistance || !FMath::IsFinite(Tier.UpdateRateHz) ||
+				Tier.UpdateRateHz <= 0.0f || Tier.UpdateRateHz > 60.0f) return false;
+			PreviousRadius = Tier.MaxDistance;
+		}
+		return true;
+	}
 
 	void AppendU16(TArray<uint8>& Bytes, uint16 Value)
 	{
@@ -1046,15 +1071,19 @@ void UFlecsNetworkSessionSubsystem::ProcessServerReplication()
 			Context.Controller = Controller;
 			Context.ViewPosition = FocalLocation;
 			FString InterestError;
-			if (!PeerInterestProvider(Context, Interest, Budget, InterestError) || Budget.MaxRecords == 0 ||
-				Budget.MaxRecords > static_cast<uint32>(MaxChannelUpdateRecords) || Budget.MaxBytes == 0 || Budget.MaxBytes > MaxChannelUpdatePayloadBytes)
+			if (!PeerInterestProvider(Context, Interest, Budget, InterestError))
 			{
 				RejectPeerManifest(Session.Incarnation, InterestError.IsEmpty() ?
-					TEXT("The peer interest provider returned an invalid or over-limit budget.") : InterestError.Left(512));
+					TEXT("The peer interest provider rejected the connection.") : InterestError.Left(512));
 				continue;
 			}
 			// The game can choose relevance but cannot impersonate another connection.
 			Interest.ConnectionId = Session.Incarnation.Value;
+		}
+		if (!IsValidPeerInterest(Interest, Budget))
+		{
+			RejectPeerManifest(Session.Incarnation, TEXT("The peer interest view, tiers, overrides, or budget is invalid or over limit."));
+			continue;
 		}
 		FFlecsRelevanceSelection Selection;
 		if (!Runtime.Scheduler.Select(SpatialIndex, Interest, NowSeconds, Budget, Selection))
